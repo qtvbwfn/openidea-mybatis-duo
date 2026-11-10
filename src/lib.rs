@@ -18,6 +18,7 @@ impl Plugin for MybatisPlus {
         match id {
             "convert-sql-log" => convert_sql_log(ctx),
             "generate-statement" => generate_statement(ctx),
+            "create-mapper-xml" => create_mapper_xml(ctx),
             other => Err(Error::NotFound(format!("command {other}"))),
         }
     }
@@ -122,15 +123,38 @@ fn generate_statement(ctx: &Invocation) -> Result<Option<String>, Error> {
             Err(e) => return Err(e),
         }
     }
-    // No mapper XML for this interface yet: offer to create one.
+    // No mapper XML for this interface yet: name the command that creates one.
+    host::notify(
+        NotificationLevel::Warning,
+        "MyBatis Plus",
+        &format!("No mapper XML for {} — use 'MyBatis Plus: Create Mapper XML' first", iface.fqn),
+    );
+    Ok(None)
+}
+
+/// `Create Mapper XML`: the whole file for the interface, at the Spring
+/// convention path under `src/main/resources`.
+fn create_mapper_xml(ctx: &Invocation) -> Result<Option<String>, Error> {
+    let editor = ctx.editor().ok_or_else(|| Error::Invalid("no file is open in the editor".into()))?;
+    if editor.language() != "java" {
+        host::notify(NotificationLevel::Warning, "MyBatis Plus", "The caret is not in a Java file");
+        return Ok(None);
+    }
+    let doc = editor.document()?;
+    let Some(iface) = parse::parse_java(&doc.text) else {
+        host::notify(NotificationLevel::Warning, "MyBatis Plus", "The file is not a mapper interface");
+        return Ok(None);
+    };
+    let project = ctx.project().ok_or_else(|| Error::Invalid("no project is open".into()))?;
     let root = project.root()?;
     let rel = format!("src/main/resources/{}/{}.xml", iface.pkg.replace('.', "/"), iface.name);
     let target = format!("{}/{}", root.trim_end_matches('/'), rel);
-    let create = host::confirm(
-        "Create mapper XML?",
-        &format!("No mapper XML for {} exists. Create {}?", iface.fqn, rel),
-    )?;
-    if !create {
+    if project.exists(&target)? {
+        host::notify(
+            NotificationLevel::Info,
+            "MyBatis Plus",
+            &format!("{rel} already exists"),
+        );
         return Ok(None);
     }
     project.write_file(&target, &generate::mapper_xml_content(&iface))?;

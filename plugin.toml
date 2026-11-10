@@ -6,7 +6,7 @@ authors = ["qtvbwfn"]
 license = "Apache-2.0"
 change-notes = "0.1.0 — first release: statement generation, the @Param quickfix and SQL-log conversion."
 categories = ["frameworks"]
-engines.openidea = "^1.5"
+engines.openidea = "^1.3"
 wasm = "dist/plugin.wasm"
 activation = ["on-command:*"]
 
@@ -16,6 +16,10 @@ required = ["project.read", "project.write", "clipboard"]
 [[contributes.commands]]
 id = "generate-statement"
 title = "MyBatis Plus: Create Mapper Statement"
+
+[[contributes.commands]]
+id = "create-mapper-xml"
+title = "MyBatis Plus: Create Mapper XML"
 
 [[contributes.commands]]
 id = "convert-sql-log"
@@ -28,6 +32,10 @@ languages = ["java"]
 [[contributes.menus]]
 menu = "editor.context"
 command = "generate-statement"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "create-mapper-xml"
 
 [[contributes.menus]]
 menu = "editor.context"

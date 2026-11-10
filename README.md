@@ -5,8 +5,9 @@ official MyBatis Navigator plugin lacks:
 
 - **Statement generation** — for a mapper method with no matching statement,
   create it in the mapper XML (the kind is inferred from the return type and
-  refined by the method-name prefix; the XML is created after a confirmation
-  when it does not exist yet).
+  refined by the method-name prefix). When the mapper XML does not exist yet,
+  `MyBatis Plus: Create Mapper XML` writes the whole file at the Spring
+  convention path (`src/main/resources/<package>/<Interface>.xml`).
 - **`@Param` quickfix** — a multi-parameter mapper method missing `@Param`
   (or an empty `@Param()`) gets its annotations and import added (⌥↵).
 - **SQL-log conversion** — with `==>  Preparing:` / `==> Parameters:` log text
