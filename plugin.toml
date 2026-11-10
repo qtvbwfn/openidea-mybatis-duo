@@ -1,0 +1,34 @@
+id = "qtvbwfn.mybatis-plus"
+name = "MyBatis Plus"
+version = "0.1.0"
+description = "Generates mapper statements, adds @Param annotations and converts MyBatis SQL logs. Pairs with the official MyBatis Navigator plugin, which owns navigation."
+authors = ["qtvbwfn"]
+license = "Apache-2.0"
+change-notes = "0.1.0 — first release: statement generation, the @Param quickfix and SQL-log conversion."
+categories = ["frameworks"]
+engines.openidea = "^1.5"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*"]
+
+[capabilities]
+required = ["project.read", "project.write", "clipboard"]
+
+[[contributes.commands]]
+id = "generate-statement"
+title = "MyBatis Plus: Create Mapper Statement"
+
+[[contributes.commands]]
+id = "convert-sql-log"
+title = "MyBatis Plus: Convert SQL Log to SQL"
+
+[[contributes.providers]]
+kinds = ["code-actions"]
+languages = ["java"]
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "generate-statement"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "convert-sql-log"
