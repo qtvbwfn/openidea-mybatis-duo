@@ -20,6 +20,13 @@ completion) is the official `openidea.mybatis` plugin's job; install both.
 A console entry for the SQL conversion lands once the host ships the console
 context menu API.
 
+**Known limitation:** when the project is open as a *project window group*
+(workspace), the plugin API exposes only the group root — its members' files
+are outside it, so statement generation and XML creation report that no mapper
+XML is reachable. SQL-log conversion works (it reads the editor buffer). Open a
+member as its own project, or wait for the host to expose member projects to
+plugins.
+
 ## Install
 
 Build, then install from disk (Settings › Plugins › Install Plugin from Disk)

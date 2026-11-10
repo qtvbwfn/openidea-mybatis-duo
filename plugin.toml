@@ -1,6 +1,6 @@
 id = "qtvbwfn.mybatis-duo"
 name = "MyBatis Duo"
-version = "0.1.0"
+version = "0.2.0"
 description = "Generates mapper statements, adds @Param annotations and converts MyBatis SQL logs (a duo with the official MyBatis Navigator plugin, which owns navigation)."
 authors = ["qtvbwfn"]
 license = "Apache-2.0"
@@ -11,7 +11,7 @@ wasm = "dist/plugin.wasm"
 activation = ["on-command:*"]
 
 [capabilities]
-required = ["project.read", "project.write", "clipboard"]
+required = ["project.read", "project.write", "editor.read", "clipboard"]
 
 [[contributes.commands]]
 id = "generate-statement"
