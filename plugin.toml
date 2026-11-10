@@ -1,7 +1,7 @@
-id = "qtvbwfn.mybatis-plus"
-name = "MyBatis Plus"
+id = "qtvbwfn.mybatis-duo"
+name = "MyBatis Duo"
 version = "0.1.0"
-description = "Generates mapper statements, adds @Param annotations and converts MyBatis SQL logs. Pairs with the official MyBatis Navigator plugin, which owns navigation."
+description = "Generates mapper statements, adds @Param annotations and converts MyBatis SQL logs (a duo with the official MyBatis Navigator plugin, which owns navigation)."
 authors = ["qtvbwfn"]
 license = "Apache-2.0"
 change-notes = "0.1.0 — first release: statement generation, the @Param quickfix and SQL-log conversion."
@@ -15,15 +15,15 @@ required = ["project.read", "project.write", "clipboard"]
 
 [[contributes.commands]]
 id = "generate-statement"
-title = "MyBatis Plus: Create Mapper Statement"
+title = "MyBatis Duo: Create Mapper Statement"
 
 [[contributes.commands]]
 id = "create-mapper-xml"
-title = "MyBatis Plus: Create Mapper XML"
+title = "MyBatis Duo: Create Mapper XML"
 
 [[contributes.commands]]
 id = "convert-sql-log"
-title = "MyBatis Plus: Convert SQL Log to SQL"
+title = "MyBatis Duo: Convert SQL Log to SQL"
 
 [[contributes.providers]]
 kinds = ["code-actions"]

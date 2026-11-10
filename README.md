@@ -1,4 +1,4 @@
-# MyBatis Plus
+# MyBatis Duo
 
 A plugin for [OpenIDEA](https://github.com/l0ng-ai/openidea) that adds what the
 official MyBatis Navigator plugin lacks:
@@ -6,7 +6,7 @@ official MyBatis Navigator plugin lacks:
 - **Statement generation** — for a mapper method with no matching statement,
   create it in the mapper XML (the kind is inferred from the return type and
   refined by the method-name prefix). When the mapper XML does not exist yet,
-  `MyBatis Plus: Create Mapper XML` writes the whole file at the Spring
+  `MyBatis Duo: Create Mapper XML` writes the whole file at the Spring
   convention path (`src/main/resources/<package>/<Interface>.xml`).
 - **`@Param` quickfix** — a multi-parameter mapper method missing `@Param`
   (or an empty `@Param()`) gets its annotations and import added (⌥↵).
@@ -29,7 +29,7 @@ or drop the directory into `<project>/.openidea/plugins/` while developing.
 rustup target add wasm32-wasip2   # once
 cargo build --release --target wasm32-wasip2
 mkdir -p dist
-cp target/wasm32-wasip2/release/openidea_plugin_mybatis_plus.wasm dist/plugin.wasm
+cp target/wasm32-wasip2/release/openidea_plugin_mybatis_duo.wasm dist/plugin.wasm
 ```
 
 The manifest requests `project.read`, `project.write` and `clipboard`; the IDE

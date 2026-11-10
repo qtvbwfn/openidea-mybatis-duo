@@ -1,4 +1,4 @@
-//! MyBatis Plus: statement generation, the `@Param` quickfix and SQL-log
+//! MyBatis Duo: statement generation, the `@Param` quickfix and SQL-log
 //! conversion. Navigation (gutter, Go to Definition, completion) is the
 //! official `openidea.mybatis` plugin's job — this plugin adds what it lacks.
 
@@ -55,14 +55,14 @@ fn convert_sql_log(ctx: &Invocation) -> Result<Option<String>, Error> {
 fn generate_statement(ctx: &Invocation) -> Result<Option<String>, Error> {
     let editor = ctx.editor().ok_or_else(|| Error::Invalid("no file is open in the editor".into()))?;
     if editor.language() != "java" {
-        host::notify(NotificationLevel::Warning, "MyBatis Plus", "The caret is not in a Java file");
+        host::notify(NotificationLevel::Warning, "MyBatis Duo", "The caret is not in a Java file");
         return Ok(None);
     }
     let doc = editor.document()?;
     let selections = editor.selections()?;
     let cursor = selections.first().and_then(|r| offset(&doc.text, r.start)).unwrap_or(0);
     let Some(iface) = parse::parse_java(&doc.text) else {
-        host::notify(NotificationLevel::Warning, "MyBatis Plus", "The file is not a mapper interface");
+        host::notify(NotificationLevel::Warning, "MyBatis Duo", "The file is not a mapper interface");
         return Ok(None);
     };
     let method = iface
@@ -70,13 +70,13 @@ fn generate_statement(ctx: &Invocation) -> Result<Option<String>, Error> {
         .iter()
         .find(|m| cursor >= m.extent.0 && cursor < m.extent.1);
     let Some(method) = method else {
-        host::notify(NotificationLevel::Warning, "MyBatis Plus", "Put the caret in a mapper method");
+        host::notify(NotificationLevel::Warning, "MyBatis Duo", "Put the caret in a mapper method");
         return Ok(None);
     };
     let Some(kind) = method.kind else {
         host::notify(
             NotificationLevel::Warning,
-            "MyBatis Plus",
+            "MyBatis Duo",
             "This method carries SQL annotations or is a default method — it needs no XML statement",
         );
         return Ok(None);
@@ -95,7 +95,7 @@ fn generate_statement(ctx: &Invocation) -> Result<Option<String>, Error> {
         if xml.statements.iter().any(|s| s == &method.name) {
             host::notify(
                 NotificationLevel::Info,
-                "MyBatis Plus",
+                "MyBatis Duo",
                 &format!("{}#{} already has an XML statement", iface.name, method.name),
             );
             return Ok(None);
@@ -107,7 +107,7 @@ fn generate_statement(ctx: &Invocation) -> Result<Option<String>, Error> {
             Ok(()) => {
                 host::notify(
                     NotificationLevel::Info,
-                    "MyBatis Plus",
+                    "MyBatis Duo",
                     &format!("Created {} <{}> in {}", kind.as_str(), method.name, path),
                 );
                 return Ok(Some(path));
@@ -115,7 +115,7 @@ fn generate_statement(ctx: &Invocation) -> Result<Option<String>, Error> {
             Err(Error::Invalid(_)) => {
                 host::notify(
                     NotificationLevel::Warning,
-                    "MyBatis Plus",
+                    "MyBatis Duo",
                     &format!("Save {} first: it has unsaved changes", path),
                 );
                 return Ok(None);
@@ -126,8 +126,8 @@ fn generate_statement(ctx: &Invocation) -> Result<Option<String>, Error> {
     // No mapper XML for this interface yet: name the command that creates one.
     host::notify(
         NotificationLevel::Warning,
-        "MyBatis Plus",
-        &format!("No mapper XML for {} — use 'MyBatis Plus: Create Mapper XML' first", iface.fqn),
+        "MyBatis Duo",
+        &format!("No mapper XML for {} — use 'MyBatis Duo: Create Mapper XML' first", iface.fqn),
     );
     Ok(None)
 }
@@ -137,12 +137,12 @@ fn generate_statement(ctx: &Invocation) -> Result<Option<String>, Error> {
 fn create_mapper_xml(ctx: &Invocation) -> Result<Option<String>, Error> {
     let editor = ctx.editor().ok_or_else(|| Error::Invalid("no file is open in the editor".into()))?;
     if editor.language() != "java" {
-        host::notify(NotificationLevel::Warning, "MyBatis Plus", "The caret is not in a Java file");
+        host::notify(NotificationLevel::Warning, "MyBatis Duo", "The caret is not in a Java file");
         return Ok(None);
     }
     let doc = editor.document()?;
     let Some(iface) = parse::parse_java(&doc.text) else {
-        host::notify(NotificationLevel::Warning, "MyBatis Plus", "The file is not a mapper interface");
+        host::notify(NotificationLevel::Warning, "MyBatis Duo", "The file is not a mapper interface");
         return Ok(None);
     };
     let project = ctx.project().ok_or_else(|| Error::Invalid("no project is open".into()))?;
@@ -152,13 +152,13 @@ fn create_mapper_xml(ctx: &Invocation) -> Result<Option<String>, Error> {
     if project.exists(&target)? {
         host::notify(
             NotificationLevel::Info,
-            "MyBatis Plus",
+            "MyBatis Duo",
             &format!("{rel} already exists"),
         );
         return Ok(None);
     }
     project.write_file(&target, &generate::mapper_xml_content(&iface))?;
-    host::notify(NotificationLevel::Info, "MyBatis Plus", &format!("Created {rel}"));
+    host::notify(NotificationLevel::Info, "MyBatis Duo", &format!("Created {rel}"));
     Ok(Some(target))
 }
 
