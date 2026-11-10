@@ -157,7 +157,6 @@ fn find_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
 
 struct TypeDecl {
     name: String,
-    at: usize,
     body_from: usize,
 }
 
@@ -205,7 +204,7 @@ fn find_type_decl(masked: &[u8]) -> Option<TypeDecl> {
                 _ => {}
             }
         }
-        return body_from.map(|body_from| TypeDecl { name, at, body_from });
+        return body_from.map(|body_from| TypeDecl { name, body_from });
     }
     None
 }
