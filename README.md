@@ -1,8 +1,15 @@
 # MyBatis Duo
 
-A plugin for [OpenIDEA](https://github.com/l0ng-ai/openidea) that adds what the
-official MyBatis Navigator plugin lacks:
+A plugin for [OpenIDEA](https://github.com/l0ng-ai/openidea) that provides the
+whole MyBatis assist set in one install (requires OpenIDEA with plugin API 1.5,
+i.e. v0.1.41 or newer):
 
+- **Navigation both ways** — gutter arrows between a mapper interface and its
+  XML statements and back, Go to Definition on namespaces, methods, statement
+  ids, `#{…}` parameters, result maps and `<include>` refs, `#{}`/`${}`
+  parameter completion, statement-id and `<sql>` refid completion, `@ResultMap`
+  ids and annotation-SQL parameters (ported from the official
+  `openidea.mybatis` plugin 0.4.1, Apache-2.0).
 - **Statement generation** — for a mapper method with no matching statement,
   create it in the mapper XML (the kind is inferred from the return type and
   refined by the method-name prefix). When the mapper XML does not exist yet,
@@ -15,10 +22,10 @@ official MyBatis Navigator plugin lacks:
   with proper quoting and escaping, and the statement text is kept exactly as
   logged.
 
-Navigation (gutter arrows, Go to Definition, statement-id and parameter
-completion) is the official `openidea.mybatis` plugin's job; install both.
-A console entry for the SQL conversion lands once the host ships the console
-context menu API.
+**Disable the official MyBatis Navigator plugin** when Duo is installed: both
+provide gutter arrows and completion on the same files, so keeping both shows
+every arrow twice. A console entry for the SQL conversion lands once the host
+ships the console context menu API.
 
 **Known limitation:** when the project is open as a *project window group*
 (workspace), the plugin API exposes only the group root — its members' files

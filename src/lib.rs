@@ -1,17 +1,23 @@
-//! MyBatis Duo: statement generation, the `@Param` quickfix and SQL-log
-//! conversion. Navigation (gutter, Go to Definition, completion) is the
-//! official `openidea.mybatis` plugin's job — this plugin adds what it lacks.
+//! MyBatis Duo: mapper navigation both ways (gutter arrows, Go to
+//! Definition, statement/parameter completion — ported from the official
+//! `openidea.mybatis` plugin 0.4.1, see `nav.rs`), statement generation, the
+//! `@Param` quickfix and SQL-log conversion. One plugin for the whole set:
+//! disable the official Navigator to avoid double gutter arrows.
 
 mod generate;
+mod nav;
 mod parse;
 mod sqllog;
 
-use openidea_plugin::providers::{CodeAction, Document, Providers};
+use openidea_plugin::providers::{CodeAction, CompletionItem, Document, LineMarker, Providers};
 use openidea_plugin::text::{offset, position};
-use openidea_plugin::{Error, Invocation, NotificationLevel, Plugin, Range, TextEdit, host, register_plugin};
+use openidea_plugin::{Error, Invocation, Location, NotificationLevel, Plugin, Position, Range, TextEdit, host, register_plugin};
 
 #[derive(Default)]
-struct MybatisPlus;
+struct MybatisPlus {
+    /// The ported official navigator (namespace→XML cache included).
+    nav: nav::Navigator,
+}
 
 impl Plugin for MybatisPlus {
     fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
@@ -163,6 +169,23 @@ fn create_mapper_xml(ctx: &Invocation) -> Result<Option<String>, Error> {
 }
 
 impl Providers for MybatisPlus {
+    /// Gutter arrows both ways (the official navigator's links).
+    fn line_markers(&mut self, doc: &Document) -> Vec<LineMarker> {
+        self.nav.line_markers(doc)
+    }
+
+    /// Go to Definition on namespaces, methods, statement ids, `#{…}`
+    /// parameters, result maps and `<include>` refs.
+    fn definition(&mut self, doc: &Document, at: Position) -> Vec<Location> {
+        self.nav.definition(doc, at)
+    }
+
+    /// Statement ids, `<sql>` refids, `#{…}` parameters, result-map and
+    /// annotation-SQL parameter completion.
+    fn completion(&mut self, doc: &Document, at: Position, trigger: Option<&str>) -> Vec<CompletionItem> {
+        self.nav.completion(doc, at, trigger)
+    }
+
     /// `Add @Param annotations` as a quickfix on the mapper method under the
     /// caret; edits stay in the current file (annotations + the import).
     fn code_actions(&mut self, doc: &Document, selection: Range) -> Vec<CodeAction> {
