@@ -9,9 +9,10 @@ mod nav;
 mod parse;
 mod sqllog;
 
-use openidea_plugin::providers::{CodeAction, CompletionItem, Document, LineMarker, Providers};
+use openidea_plugin::indexing::DocumentIndexer;
+use openidea_plugin::providers::{CodeAction, CompletionItem, Document, Providers};
 use openidea_plugin::text::{offset, position};
-use openidea_plugin::{Error, Invocation, Location, NotificationLevel, Plugin, Position, Range, TextEdit, host, register_plugin};
+use openidea_plugin::{Error, Invocation, NotificationLevel, Plugin, Position, Range, TextEdit, host, register_plugin};
 
 #[derive(Default)]
 struct MybatisPlus {
@@ -168,20 +169,19 @@ fn create_mapper_xml(ctx: &Invocation) -> Result<Option<String>, Error> {
     Ok(Some(target))
 }
 
+impl DocumentIndexer for MybatisPlus {
+    /// Background indexing: the host feeds documents in batches (the 5 s
+    /// command budget) and answers gutter arrows and Go to Definition from
+    /// the graph, so navigation never runs inside the 500 ms edit budget.
+    fn index(&mut self, doc: &openidea_plugin::indexing::Document) -> openidea_plugin::indexing::Edges {
+        self.nav.index(doc)
+    }
+}
+
 impl Providers for MybatisPlus {
-    /// Gutter arrows both ways (the official navigator's links).
-    fn line_markers(&mut self, doc: &Document) -> Vec<LineMarker> {
-        self.nav.line_markers(doc)
-    }
-
-    /// Go to Definition on namespaces, methods, statement ids, `#{…}`
-    /// parameters, result maps and `<include>` refs.
-    fn definition(&mut self, doc: &Document, at: Position) -> Vec<Location> {
-        self.nav.definition(doc, at)
-    }
-
     /// Statement ids, `<sql>` refids, `#{…}` parameters, result-map and
-    /// annotation-SQL parameter completion.
+    /// annotation-SQL parameter completion. (Gutter arrows and Go to
+    /// Definition are answered from the index graph — see `DocumentIndexer`.)
     fn completion(&mut self, doc: &Document, at: Position, trigger: Option<&str>) -> Vec<CompletionItem> {
         self.nav.completion(doc, at, trigger)
     }
@@ -225,7 +225,7 @@ impl Providers for MybatisPlus {
     }
 }
 
-register_plugin!(MybatisPlus, providers);
+register_plugin!(MybatisPlus, providers, indexing);
 
 #[cfg(test)]
 mod tests {

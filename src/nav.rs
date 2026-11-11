@@ -11,6 +11,7 @@
 //! The `Providers` impl lives on `Navigator`; `MybatisPlus` delegates to it,
 //! so this file stays a verbatim port and upstream fixes apply as moves.
 
+use openidea_plugin::indexing::{Anchor, DocumentIndexer, Edges};
 use openidea_plugin::providers::{CompletionItem, CompletionKind, Document, LineMarker, Providers};
 use openidea_plugin::text::{offset, position};
 use openidea_plugin::{
@@ -1014,6 +1015,100 @@ fn annotation_param_completion(doc: &Document, at: Position) -> Vec<CompletionIt
     Vec::new()
 }
 
+// ---------------------------------------------------------------------------
+// Background indexing
+//
+// The provider route (`line_markers` / `definition`) answers from a live
+// namespace→XML lookup whose cold `search_text` exceeds the 500 ms edit budget
+// on real projects (1,000+ XMLs), and every timeout crash rebuilds the Wasm
+// instance and throws the TTL cache away — the #2505 spiral. The host's
+// document-indexer instead feeds documents in cancellable background batches
+// (the 5 s command budget), keeps the project-wide graph, and answers gutter
+// arrows and Go to Definition from memory without ever calling the plugin.
+//
+// Both sides publish the same keys: a Java method and its XML statement each
+// anchor `definitions` + `references` + `markers` at their own range. The host
+// drops a marker/⌘B target that points at the anchor itself, so each side's
+// arrow and declaration jump lands on the other file.
+
+/// One anchor per role: the key declared, referred to and marked at `range`.
+fn triple(e: &mut Edges, key: &str, range: Range) {
+    for list in [&mut e.definitions, &mut e.references, &mut e.markers] {
+        list.push(Anchor { key: key.to_owned(), range });
+    }
+}
+
+impl DocumentIndexer for Navigator {
+    fn index(&mut self, doc: &openidea_plugin::indexing::Document) -> Edges {
+        if doc.path.ends_with(".java") {
+            let java = parse_java(&doc.text);
+            let Some(name) = java.name.clone() else { return Edges::default() };
+            let mut e = Edges::default();
+            for (m, params) in &java.methods {
+                let key = format!("{name}#{}", m.name);
+                triple(&mut e, &key, m.range);
+                // `#{…}` / `${…}` inside the method's annotation SQL goes to the
+                // parameter (`@Param("…")` wins), as the provider definition did.
+                let dotted = java
+                    .annotation_sql
+                    .iter()
+                    .filter(|sql| sql.method == java.methods.iter().position(|(mm, _)| mm == m).unwrap_or(usize::MAX));
+                for sql in dotted {
+                    for occ in &sql.params {
+                        let first = occ.name.split('.').next().unwrap_or("");
+                        if let Some(p) = params.iter().find(|p| p.name == first) {
+                            e.references.push(Anchor { key: format!("{key}::param::{}", p.name), range: occ.range });
+                            e.definitions.push(Anchor { key: format!("{key}::param::{}", p.name), range: p.range });
+                        }
+                    }
+                }
+                // `@ResultMap("…")` refers to `@Results(id = "…")` here or the
+                // XML `<resultMap>`; the XML side publishes those definitions.
+                for r in java.result_refs.iter().filter(|r| java.methods.get(r.method).map(|(mm, _)| mm == m).unwrap_or(false)) {
+                    e.references.push(Anchor { key: format!("{name}::rm::{}", r.name.name), range: r.name.range });
+                }
+                for (_, d) in java.result_ids.iter() {
+                    e.definitions.push(Anchor { key: format!("{name}::rm::{}", d.name), range: d.range });
+                }
+            }
+            e
+        } else if doc.path.ends_with(".xml") {
+            let xml = parse_xml(&doc.text);
+            let Some(ns) = xml.namespace.clone() else { return Edges::default() };
+            let mut e = Edges::default();
+            for s in &xml.statements {
+                triple(&mut e, &format!("{}#{}", ns.name, s.name), s.range);
+            }
+            for m in &xml.result_maps {
+                e.definitions.push(Anchor { key: format!("{}::rm::{}", ns.name, m.name), range: m.range });
+            }
+            for f in &xml.sql_fragments {
+                e.definitions.push(Anchor { key: format!("{}::sql::{}", ns.name, f.name), range: f.range });
+            }
+            for r in xml.result_map_refs.iter().chain(xml.extends_refs.iter()) {
+                // A dotted name carries its own namespace; otherwise this file's.
+                let key = match r.name.rsplit_once('.') {
+                    Some((other, id)) if !xml.result_maps.iter().any(|m| m.name == r.name) => {
+                        format!("{other}::rm::{id}")
+                    }
+                    _ => format!("{}::rm::{}", ns.name, r.name),
+                };
+                e.references.push(Anchor { key, range: r.range });
+            }
+            for r in &xml.include_refs {
+                let key = match r.name.rsplit_once('.') {
+                    Some((other, id)) => format!("{other}::sql::{id}"),
+                    None => format!("{}::sql::{}", ns.name, r.name),
+                };
+                e.references.push(Anchor { key, range: r.range });
+            }
+            e
+        } else {
+            Edges::default()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1475,5 +1570,73 @@ mod tests {
         let col = line.find("\"userMap\"").unwrap() + 1 + 2;
         let items = n.completion(&closed, Position::new(7, col as u32), None);
         assert_eq!(items.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["userMap"]);
+    }
+
+    #[test]
+    fn indexes_both_sides_into_edges() {
+        // Java: each method anchors definitions+references+markers at its name.
+        let java = openidea_plugin::indexing::Document {
+            path: "/p/UserMapper.java".into(),
+            text: JAVA.into(),
+            symbols: vec![],
+        };
+        let e = Navigator::default().index(&java);
+        assert_eq!(e.definitions.len(), 3, "four methods, the default one excluded");
+        assert_eq!(e.references.len(), 3);
+        assert_eq!(e.markers.len(), 3);
+        let keys: Vec<_> = e.definitions.iter().map(|a| a.key.as_str()).collect();
+        assert!(keys.contains(&"com.acme.UserMapper#findById"), "{keys:?}");
+        let by = e.definitions.iter().find(|a| a.key.ends_with("#findById")).unwrap();
+        assert_eq!(by.range.start.line, 5);
+        // XML: statements anchor the same keys at the id values.
+        let xml = openidea_plugin::indexing::Document {
+            path: "/p/UserMapper.xml".into(),
+            text: XML.into(),
+            symbols: vec![],
+        };
+        let e = Navigator::default().index(&xml);
+        assert_eq!(e.definitions.len(), 3, "findById, insert and the empty id");
+        assert_eq!(e.markers.len(), 3);
+        let by = e.definitions.iter().find(|a| a.key.ends_with("#findById")).unwrap();
+        assert_eq!(by.range.start.line, 2, "the id value line");
+        assert_eq!(by.range.start.character, 14, "inside id=\"...\"");
+        // A non-mapper file contributes nothing.
+        let plain = openidea_plugin::indexing::Document {
+            path: "/p/Util.java".into(),
+            text: "package com.acme;\nclass Util {}\n".into(),
+            symbols: vec![],
+        };
+        assert!(Navigator::default().index(&plain).definitions.is_empty());
+        let nonmapper_xml = openidea_plugin::indexing::Document {
+            path: "/p/pom.xml".into(),
+            text: "<project/>
+".into(),
+            symbols: vec![],
+        };
+        assert!(Navigator::default().index(&nonmapper_xml).definitions.is_empty());
+    }
+
+    #[test]
+    fn indexes_result_maps_and_annotation_params() {
+        const SQL: &str = concat!(
+            "package com.acme;\n\n",
+            "public interface UserMapper {\n",
+            "    @Select(\"SELECT * FROM users WHERE id = #{id}\")\n",
+            "    User findById(Long id);\n",
+            "}\n"
+        );
+        let java = openidea_plugin::indexing::Document {
+            path: "/p/UserMapper.java".into(),
+            text: SQL.into(),
+            symbols: vec![],
+        };
+        let e = Navigator::default().index(&java);
+        // `#{…}` inside `@Select` refers to the parameter (`Long id` — no @Param).
+        assert!(
+            e.references.iter().any(|a| a.key == "com.acme.UserMapper#findById::param::id"),
+            "{:?}",
+            e.references.iter().map(|a| a.key.as_str()).collect::<Vec<_>>()
+        );
+        assert!(e.definitions.iter().any(|a| a.key == "com.acme.UserMapper#findById::param::id"));
     }
 }

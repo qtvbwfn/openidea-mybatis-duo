@@ -8,8 +8,14 @@ i.e. v0.1.41 or newer):
   XML statements and back, Go to Definition on namespaces, methods, statement
   ids, `#{…}` parameters, result maps and `<include>` refs, `#{}`/`${}`
   parameter completion, statement-id and `<sql>` refid completion, `@ResultMap`
-  ids and annotation-SQL parameters (ported from the official
+  ids and annotation-SQL parameters (parsing ported from the official
   `openidea.mybatis` plugin 0.4.1, Apache-2.0).
+
+  Navigation is served from a **background index**: the host feeds documents to
+  the plugin in cancellable batches and answers gutter arrows and ⌘B from the
+  project graph, so large projects (1,000+ XML files) never hit the live
+  provider's time budget. Files are indexed as the project's file index reaches
+  them — an opened file is indexed first, the rest catch up in the background.
 - **Statement generation** — for a mapper method with no matching statement,
   create it in the mapper XML (the kind is inferred from the return type and
   refined by the method-name prefix). When the mapper XML does not exist yet,
