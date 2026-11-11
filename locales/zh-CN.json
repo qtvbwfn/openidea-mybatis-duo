@@ -1,0 +1,20 @@
+{
+  "MyBatis Duo: Create Mapper Statement": "MyBatis Duo：创建 Mapper Statement",
+  "MyBatis Duo: Create Mapper XML": "MyBatis Duo：创建 Mapper XML",
+  "MyBatis Duo: Convert SQL Log to SQL": "MyBatis Duo：SQL 日志转换为 SQL",
+  "The selection has no MyBatis SQL log to convert": "选中的内容没有可转换的 MyBatis SQL 日志",
+  "The converted SQL is on the clipboard": "转换后的 SQL 已复制到剪贴板",
+  "The caret is not in a Java file": "光标不在 Java 文件中",
+  "The file is not a mapper interface": "当前文件不是 Mapper 接口",
+  "Put the caret in a mapper method": "请把光标放在 Mapper 方法内",
+  "This method carries SQL annotations or is a default method — it needs no XML statement": "该方法带 SQL 注解或是 default 方法——无需生成 XML statement",
+  "{name}#{method} already has an XML statement": "{name}#{method} 已有 XML statement",
+  "Created {kind} <{method}> in {path}": "已在 {path} 创建 {kind} <{method}>",
+  "Save {path} first: it has unsaved changes": "请先保存 {path}：它有未保存的修改",
+  "No mapper XML for {fqn} — use 'MyBatis Duo: Create Mapper XML' first": "{fqn} 没有 Mapper XML——请先使用“MyBatis Duo：创建 Mapper XML”",
+  "{rel} already exists": "{rel} 已存在",
+  "Created {rel}": "已创建 {rel}",
+  "Add @Param annotations to {name}": "为 {name} 生成 @Param 注解",
+  "no file is open in the editor": "编辑器中没有打开的文件",
+  "no project is open": "没有打开的项目"
+}

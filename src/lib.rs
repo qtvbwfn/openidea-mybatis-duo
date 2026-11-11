@@ -5,10 +5,12 @@
 //! disable the official Navigator to avoid double gutter arrows.
 
 mod generate;
+mod i18n;
 mod nav;
 mod parse;
 mod sqllog;
 
+use i18n::{t, t_with};
 use openidea_plugin::indexing::DocumentIndexer;
 use openidea_plugin::providers::{CodeAction, CompletionItem, Document, Providers};
 use openidea_plugin::text::{offset, position};
@@ -34,7 +36,7 @@ impl Plugin for MybatisPlus {
 /// `Copy MyBatis SQL` for the editor selection: the converter is pure, the
 /// result goes to the clipboard.
 fn convert_sql_log(ctx: &Invocation) -> Result<Option<String>, Error> {
-    let editor = ctx.editor().ok_or_else(|| Error::Invalid("no file is open in the editor".into()))?;
+    let editor = ctx.editor().ok_or_else(|| Error::Invalid(t("no file is open in the editor")))?;
     let doc = editor.document()?;
     let selections = editor.selections()?;
     let mut parts = Vec::new();
@@ -47,12 +49,12 @@ fn convert_sql_log(ctx: &Invocation) -> Result<Option<String>, Error> {
         host::notify(
             NotificationLevel::Warning,
             "MyBatis SQL",
-            "The selection has no MyBatis SQL log to convert",
+            &t("The selection has no MyBatis SQL log to convert"),
         );
         return Ok(None);
     };
     host::copy_to_clipboard(&sql)?;
-    host::notify(NotificationLevel::Info, "MyBatis SQL", "The converted SQL is on the clipboard");
+    host::notify(NotificationLevel::Info, "MyBatis SQL", &t("The converted SQL is on the clipboard"));
     Ok(Some(sql))
 }
 
@@ -60,16 +62,16 @@ fn convert_sql_log(ctx: &Invocation) -> Result<Option<String>, Error> {
 /// goes into the matching mapper XML, or a new one is created after a
 /// confirmation when none exists.
 fn generate_statement(ctx: &Invocation) -> Result<Option<String>, Error> {
-    let editor = ctx.editor().ok_or_else(|| Error::Invalid("no file is open in the editor".into()))?;
+    let editor = ctx.editor().ok_or_else(|| Error::Invalid(t("no file is open in the editor")))?;
     if editor.language() != "java" {
-        host::notify(NotificationLevel::Warning, "MyBatis Duo", "The caret is not in a Java file");
+        host::notify(NotificationLevel::Warning, "MyBatis Duo", &t("The caret is not in a Java file"));
         return Ok(None);
     }
     let doc = editor.document()?;
     let selections = editor.selections()?;
     let cursor = selections.first().and_then(|r| offset(&doc.text, r.start)).unwrap_or(0);
     let Some(iface) = parse::parse_java(&doc.text) else {
-        host::notify(NotificationLevel::Warning, "MyBatis Duo", "The file is not a mapper interface");
+        host::notify(NotificationLevel::Warning, "MyBatis Duo", &t("The file is not a mapper interface"));
         return Ok(None);
     };
     let method = iface
@@ -77,18 +79,18 @@ fn generate_statement(ctx: &Invocation) -> Result<Option<String>, Error> {
         .iter()
         .find(|m| cursor >= m.extent.0 && cursor < m.extent.1);
     let Some(method) = method else {
-        host::notify(NotificationLevel::Warning, "MyBatis Duo", "Put the caret in a mapper method");
+        host::notify(NotificationLevel::Warning, "MyBatis Duo", &t("Put the caret in a mapper method"));
         return Ok(None);
     };
     let Some(kind) = method.kind else {
         host::notify(
             NotificationLevel::Warning,
             "MyBatis Duo",
-            "This method carries SQL annotations or is a default method — it needs no XML statement",
+            &t("This method carries SQL annotations or is a default method — it needs no XML statement"),
         );
         return Ok(None);
     };
-    let project = ctx.project().ok_or_else(|| Error::Invalid("no project is open".into()))?;
+    let project = ctx.project().ok_or_else(|| Error::Invalid(t("no project is open")))?;
     // shortcut: mapper XMLs conventionally end with `Mapper.xml`; other names
     // need the file opened once to be found (a project-wide namespace scan can
     // come later).
@@ -103,7 +105,7 @@ fn generate_statement(ctx: &Invocation) -> Result<Option<String>, Error> {
             host::notify(
                 NotificationLevel::Info,
                 "MyBatis Duo",
-                &format!("{}#{} already has an XML statement", iface.name, method.name),
+                &t_with("{name}#{method} already has an XML statement", &[("name", &iface.name), ("method", &method.name)]),
             );
             return Ok(None);
         }
@@ -115,7 +117,7 @@ fn generate_statement(ctx: &Invocation) -> Result<Option<String>, Error> {
                 host::notify(
                     NotificationLevel::Info,
                     "MyBatis Duo",
-                    &format!("Created {} <{}> in {}", kind.as_str(), method.name, path),
+                    &t_with("Created {kind} <{method}> in {path}", &[("kind", kind.as_str()), ("method", &method.name), ("path", &path)]),
                 );
                 return Ok(Some(path));
             }
@@ -123,7 +125,7 @@ fn generate_statement(ctx: &Invocation) -> Result<Option<String>, Error> {
                 host::notify(
                     NotificationLevel::Warning,
                     "MyBatis Duo",
-                    &format!("Save {} first: it has unsaved changes", path),
+                    &t_with("Save {path} first: it has unsaved changes", &[("path", &path)]),
                 );
                 return Ok(None);
             }
@@ -134,7 +136,7 @@ fn generate_statement(ctx: &Invocation) -> Result<Option<String>, Error> {
     host::notify(
         NotificationLevel::Warning,
         "MyBatis Duo",
-        &format!("No mapper XML for {} — use 'MyBatis Duo: Create Mapper XML' first", iface.fqn),
+        &t_with("No mapper XML for {fqn} — use 'MyBatis Duo: Create Mapper XML' first", &[("fqn", &iface.fqn)]),
     );
     Ok(None)
 }
@@ -142,17 +144,17 @@ fn generate_statement(ctx: &Invocation) -> Result<Option<String>, Error> {
 /// `Create Mapper XML`: the whole file for the interface, at the Spring
 /// convention path under `src/main/resources`.
 fn create_mapper_xml(ctx: &Invocation) -> Result<Option<String>, Error> {
-    let editor = ctx.editor().ok_or_else(|| Error::Invalid("no file is open in the editor".into()))?;
+    let editor = ctx.editor().ok_or_else(|| Error::Invalid(t("no file is open in the editor")))?;
     if editor.language() != "java" {
-        host::notify(NotificationLevel::Warning, "MyBatis Duo", "The caret is not in a Java file");
+        host::notify(NotificationLevel::Warning, "MyBatis Duo", &t("The caret is not in a Java file"));
         return Ok(None);
     }
     let doc = editor.document()?;
     let Some(iface) = parse::parse_java(&doc.text) else {
-        host::notify(NotificationLevel::Warning, "MyBatis Duo", "The file is not a mapper interface");
+        host::notify(NotificationLevel::Warning, "MyBatis Duo", &t("The file is not a mapper interface"));
         return Ok(None);
     };
-    let project = ctx.project().ok_or_else(|| Error::Invalid("no project is open".into()))?;
+    let project = ctx.project().ok_or_else(|| Error::Invalid(t("no project is open")))?;
     let root = project.root()?;
     let rel = format!("src/main/resources/{}/{}.xml", iface.pkg.replace('.', "/"), iface.name);
     let target = format!("{}/{}", root.trim_end_matches('/'), rel);
@@ -160,12 +162,12 @@ fn create_mapper_xml(ctx: &Invocation) -> Result<Option<String>, Error> {
         host::notify(
             NotificationLevel::Info,
             "MyBatis Duo",
-            &format!("{rel} already exists"),
+            &t_with("{rel} already exists", &[("rel", &rel)]),
         );
         return Ok(None);
     }
     project.write_file(&target, &generate::mapper_xml_content(&iface))?;
-    host::notify(NotificationLevel::Info, "MyBatis Duo", &format!("Created {rel}"));
+    host::notify(NotificationLevel::Info, "MyBatis Duo", &t_with("Created {rel}", &[("rel", &rel)]));
     Ok(Some(target))
 }
 
@@ -216,7 +218,7 @@ impl Providers for MybatisPlus {
             })
             .collect();
         vec![CodeAction {
-            title: format!("Add @Param annotations to {}", method.name),
+            title: t_with("Add @Param annotations to {name}", &[("name", &method.name)]),
             kind: Some("quickfix".into()),
             preferred: true,
             edits: vec![(doc.path.clone(), text_edits)],

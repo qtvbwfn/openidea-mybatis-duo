@@ -1,6 +1,6 @@
 id = "qtvbwfn.mybatis-duo"
 name = "MyBatis Duo"
-version = "0.3.1"
+version = "0.3.2"
 description = "MyBatis mapper navigation both ways (gutter arrows, Go to Definition, statement/parameter completion), statement generation, the @Param quickfix and SQL-log conversion."
 authors = ["qtvbwfn"]
 license = "Apache-2.0"

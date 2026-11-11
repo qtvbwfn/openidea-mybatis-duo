@@ -109,6 +109,7 @@ name = "openidea-plugin-mybatis-duo"
 version = "0.1.0"
 dependencies = [
  "openidea-plugin",
+ "serde_json",
 ]
 
 [[package]]

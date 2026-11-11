@@ -40,6 +40,13 @@ XML is reachable. SQL-log conversion works (it reads the editor buffer). Open a
 member as its own project, or wait for the host to expose member projects to
 plugins.
 
+## Translations
+
+The plugin ships `locales/zh-CN.json`: the IDE translates the command titles
+from it, and the plugin itself translates its notifications and the `@Param`
+quickfix title by the UI language (`host::locale()`). Text without an entry
+stays English; adding a language is a new `locales/<tag>.json`.
+
 ## Install
 
 Build, then install from disk (Settings › Plugins › Install Plugin from Disk)
