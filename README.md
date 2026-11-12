@@ -59,8 +59,8 @@ mkdir -p dist
 cp target/wasm32-wasip2/release/openidea_plugin_mybatis_duo.wasm dist/plugin.wasm
 ```
 
-The manifest requests `project.read`, `project.write` and `clipboard`; the IDE
-asks for consent on install.
+The manifest requests `project.read`, `project.write`, `editor.read` and
+`clipboard`; the IDE asks for consent on install.
 
 ## License
 

@@ -1,10 +1,10 @@
 id = "qtvbwfn.mybatis-duo"
 name = "MyBatis Duo"
-version = "0.3.2"
+version = "0.3.3"
 description = "MyBatis mapper navigation both ways (gutter arrows, Go to Definition, statement/parameter completion), statement generation, the @Param quickfix and SQL-log conversion."
 authors = ["qtvbwfn"]
 license = "Apache-2.0"
-change-notes = "0.1.0 — first release: statement generation, the @Param quickfix and SQL-log conversion."
+change-notes = "0.3.3 — mapper navigation both ways (gutter arrows, Go to Definition), statement and parameter completion, statement generation, the @Param quickfix and SQL-log conversion."
 categories = ["frameworks"]
 engines.openidea = "^1.5"
 wasm = "dist/plugin.wasm"
