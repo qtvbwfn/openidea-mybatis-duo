@@ -1,22 +1,20 @@
-//! MyBatis navigation, ported from the official `openidea.mybatis` plugin
-//! 0.4.1 (Apache-2.0): a mapper interface (`com.acme.UserMapper`) and the XML
-//! with `<mapper namespace="com.acme.UserMapper">` point at each other —
-//! gutter arrows and Go to Definition on the namespace, methods and statement
-//! ids, plus `resultMap` / `extends` / `<include refid>` targets, completion
-//! of statement ids, `<sql>` ids and `#{parameters}`. Kept as its own module
+//! MyBatis parsing and completion, ported from the official
+//! `openidea.mybatis` plugin 0.4.1 (Apache-2.0): a mapper interface
+//! (`com.acme.UserMapper`) and the XML with `<mapper namespace="com.acme.UserMapper">`
+//! point at each other, and this module completes statement ids, `<sql>` ids
+//! and `#{parameters}`, `@ResultMap` ids and annotation-SQL parameters.
+//! Gutter arrows and Go to Definition are built into OpenIDEA v0.1.44+, so
+//! the navigation entry points were dropped in 0.3.4. Kept as its own module
 //! beside Duo's generation parser (`parse.rs`): this one carries the
-//! navigation-only state (annotation SQL, result maps, the namespace→XML
+//! completion-only state (annotation SQL, result maps, the namespace→XML
 //! cache) the generation path does not need.
 //!
 //! The `Providers` impl lives on `Navigator`; `MybatisPlus` delegates to it,
-//! so this file stays a verbatim port and upstream fixes apply as moves.
+//! so the parsing stays close to the upstream port and fixes apply as moves.
 
-use openidea_plugin::indexing::{Anchor, DocumentIndexer, Edges};
-use openidea_plugin::providers::{CompletionItem, CompletionKind, Document, LineMarker, Providers};
+use openidea_plugin::providers::{CompletionItem, CompletionKind, Document, Providers};
 use openidea_plugin::text::{offset, position};
-use openidea_plugin::{
-    Location, Position, Project, Range, TextQuery, host,
-};
+use openidea_plugin::{Position, Project, Range, TextQuery, host};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -710,30 +708,6 @@ impl Navigator {
         (java.name.as_deref() == Some(namespace)).then_some((path, java))
     }
 
-    /// Where `resultMap="…"` / `<include refid="…">` points: a `<resultMap id>` /
-    /// `<sql id>` in this file, or in the mapper a `namespace.id` prefix names
-    /// (ids never hold dots, so the last segment is the id).
-    fn anchor_target(
-        &mut self,
-        project: &Project,
-        doc: &Document,
-        xml: &MapperXml,
-        here_ns: &str,
-        name: &str,
-        sql: bool,
-    ) -> Option<Location> {
-        let (ns, id) = name.rsplit_once('.').map_or((here_ns, name), |(ns, id)| (ns, id));
-        let pick = |xml: &MapperXml, path: String| {
-            let ids = if sql { &xml.sql_fragments } else { &xml.result_maps };
-            ids.iter().find(|n| n.name == id).map(|n| Location { path, range: n.range })
-        };
-        if ns == here_ns {
-            return pick(xml, doc.path.clone());
-        }
-        let (path, other) = self.xml_for(project, ns)?;
-        pick(&other, path)
-    }
-
     /// Inside `@ResultMap("…")`: the known result-map ids — `@Results(id =
     /// "…")` in this file, plus the XML mapper's `<resultMap>` ids. `None`
     /// when the cursor is not on a `@ResultMap` id.
@@ -779,82 +753,6 @@ impl Navigator {
                 .collect(),
         )
     }
-
-    /// Pairs of (name in this document, target location) for `doc`.
-    fn links(&mut self, doc: &Document) -> Vec<(Named, Location, String)> {
-        let Some(project) = project_of(&doc.path) else { return Vec::new() };
-        if doc.language == "xml" {
-            let xml = parse_xml(&doc.text);
-            let Some(ns) = xml.namespace.clone() else { return Vec::new() };
-            let mut out = Vec::new();
-            // `<mapper namespace>` → the interface; statement ids → methods.
-            if let Some((path, java)) = Self::java_for(&project, &ns.name) {
-                let simple = ns.name.rsplit('.').next().unwrap_or(&ns.name).to_owned();
-                if let Some(decl) = java.decl {
-                    out.push((
-                        ns.clone(),
-                        Location { path: path.clone(), range: decl.range },
-                        format!("interface {simple}"),
-                    ));
-                }
-                out.extend(xml.statements.iter().filter_map(|s| {
-                    let (m, _) = java.methods.iter().find(|(m, _)| m.name == s.name)?;
-                    let tip = format!("{simple}.{}()", m.name);
-                    Some((s.clone(), Location { path: path.clone(), range: m.range }, tip))
-                }));
-            }
-            // resultMap / sql references resolve even when the interface is missing.
-            for r in xml.result_map_refs.iter().chain(xml.extends_refs.iter()) {
-                if let Some(target) = self.anchor_target(&project, doc, &xml, &ns.name, &r.name, false) {
-                    out.push((r.clone(), target, format!("resultMap {}", r.name)));
-                }
-            }
-            for r in &xml.include_refs {
-                if let Some(target) = self.anchor_target(&project, doc, &xml, &ns.name, &r.name, true) {
-                    out.push((r.clone(), target, format!("sql {}", r.name)));
-                }
-            }
-            // Gutter arrows read top-down: the namespace marker precedes the statements'.
-            out.sort_by_key(|a| a.0.range.start);
-            out
-        } else {
-            let java = parse_java(&doc.text);
-            let Some(name) = java.name.clone() else { return Vec::new() };
-            let simple = name.rsplit('.').next().unwrap_or(&name).to_owned();
-            // `@ResultMap("…")`: the `@Results(id = "…")` in this file when
-            // present, else the XML mapper's `<resultMap>`. Needs no XML for
-            // pure-annotation mappers.
-            let xml = self.xml_for(&project, &name);
-            let mut out: Vec<(Named, Location, String)> = Vec::new();
-            for r in &java.result_refs {
-                if let Some((method, def)) = java.result_ids.iter().find(|(_, d)| d.name == r.name.name) {
-                    let (m, _) = &java.methods[*method];
-                    out.push((
-                        r.name.clone(),
-                        Location { path: doc.path.clone(), range: def.range },
-                        format!("{simple}.{}(): {}", m.name, def.name),
-                    ));
-                } else if let Some((path, xml)) = &xml
-                    && let Some(def) = xml.result_maps.iter().find(|m| m.name == r.name.name)
-                {
-                    let file = path.rsplit(['/', '\\']).next().unwrap_or(path).to_owned();
-                    out.push((
-                        r.name.clone(),
-                        Location { path: path.clone(), range: def.range },
-                        format!("{file}: {}", def.name),
-                    ));
-                }
-            }
-            if let Some((path, xml)) = xml {
-                let file = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
-                out.extend(java.methods.into_iter().filter_map(|(m, _)| {
-                    let s = xml.statements.iter().find(|s| s.name == m.name)?;
-                    Some((m, Location { path: path.clone(), range: s.range }, format!("{file}: {}", s.name)))
-                }));
-            }
-            out
-        }
-    }
 }
 
 fn contains(r: Range, p: Position) -> bool {
@@ -862,42 +760,6 @@ fn contains(r: Range, p: Position) -> bool {
 }
 
 impl Providers for Navigator {
-    fn line_markers(&mut self, doc: &Document) -> Vec<LineMarker> {
-        let icon = if doc.language == "xml" { "implementing" } else { "implemented" };
-        self.links(doc)
-            .into_iter()
-            .map(|(n, target, tip)| LineMarker {
-                line: n.range.start.line,
-                icon: Some(icon.into()),
-                tooltip: format!("Go to {tip}"),
-                target: Some(target),
-            })
-            .collect()
-    }
-
-    fn definition(&mut self, doc: &Document, at: Position) -> Vec<Location> {
-        let mut out: Vec<Location> =
-            self.links(doc).into_iter().filter(|(n, ..)| contains(n.range, at)).map(|(_, l, _)| l).collect();
-        // `#{…}` / `${…}` in an annotation's SQL: the method's `@Param` or
-        // parameter. Needs no XML: pure-annotation mappers work too. A dotted
-        // path (`#{user.name}`) resolves by its first segment.
-        if doc.language == "java" {
-            let java = parse_java(&doc.text);
-            for sql in &java.annotation_sql {
-                let (_, params) = &java.methods[sql.method];
-                for occ in &sql.params {
-                    let first = occ.name.split('.').next().unwrap_or("");
-                    if let Some(target) = params.iter().find(|p| p.name == first)
-                        && contains(occ.range, at)
-                    {
-                        out.push(Location { path: doc.path.clone(), range: target.range });
-                    }
-                }
-            }
-        }
-        out
-    }
-
     fn completion(&mut self, doc: &Document, at: Position, _trigger: Option<&str>) -> Vec<CompletionItem> {
         if doc.language == "java" {
             if let Some(items) = self.result_map_completion(doc, at) {
@@ -1015,105 +877,14 @@ fn annotation_param_completion(doc: &Document, at: Position) -> Vec<CompletionIt
     Vec::new()
 }
 
-// ---------------------------------------------------------------------------
-// Background indexing
-//
-// The provider route (`line_markers` / `definition`) answers from a live
-// namespace→XML lookup whose cold `search_text` exceeds the 500 ms edit budget
-// on real projects (1,000+ XMLs), and every timeout crash rebuilds the Wasm
-// instance and throws the TTL cache away — the #2505 spiral. The host's
-// document-indexer instead feeds documents in cancellable background batches
-// (the 5 s command budget), keeps the project-wide graph, and answers gutter
-// arrows and Go to Definition from memory without ever calling the plugin.
-//
-// Both sides publish the same keys: a Java method and its XML statement each
-// anchor `definitions` + `references` + `markers` at their own range. The host
-// drops a marker/⌘B target that points at the anchor itself, so each side's
-// arrow and declaration jump lands on the other file.
-
-/// One anchor per role: the key declared, referred to and marked at `range`.
-fn triple(e: &mut Edges, key: &str, range: Range) {
-    for list in [&mut e.definitions, &mut e.references, &mut e.markers] {
-        list.push(Anchor { key: key.to_owned(), range });
-    }
-}
-
-impl DocumentIndexer for Navigator {
-    fn index(&mut self, doc: &openidea_plugin::indexing::Document) -> Edges {
-        if doc.path.ends_with(".java") {
-            let java = parse_java(&doc.text);
-            let Some(name) = java.name.clone() else { return Edges::default() };
-            let mut e = Edges::default();
-            for (m, params) in &java.methods {
-                let key = format!("{name}#{}", m.name);
-                triple(&mut e, &key, m.range);
-                // `#{…}` / `${…}` inside the method's annotation SQL goes to the
-                // parameter (`@Param("…")` wins), as the provider definition did.
-                let dotted = java
-                    .annotation_sql
-                    .iter()
-                    .filter(|sql| sql.method == java.methods.iter().position(|(mm, _)| mm == m).unwrap_or(usize::MAX));
-                for sql in dotted {
-                    for occ in &sql.params {
-                        let first = occ.name.split('.').next().unwrap_or("");
-                        if let Some(p) = params.iter().find(|p| p.name == first) {
-                            e.references.push(Anchor { key: format!("{key}::param::{}", p.name), range: occ.range });
-                            e.definitions.push(Anchor { key: format!("{key}::param::{}", p.name), range: p.range });
-                        }
-                    }
-                }
-                // `@ResultMap("…")` refers to `@Results(id = "…")` here or the
-                // XML `<resultMap>`; the XML side publishes those definitions.
-                for r in java.result_refs.iter().filter(|r| java.methods.get(r.method).map(|(mm, _)| mm == m).unwrap_or(false)) {
-                    e.references.push(Anchor { key: format!("{name}::rm::{}", r.name.name), range: r.name.range });
-                }
-                for (_, d) in java.result_ids.iter() {
-                    e.definitions.push(Anchor { key: format!("{name}::rm::{}", d.name), range: d.range });
-                }
-            }
-            e
-        } else if doc.path.ends_with(".xml") {
-            let xml = parse_xml(&doc.text);
-            let Some(ns) = xml.namespace.clone() else { return Edges::default() };
-            let mut e = Edges::default();
-            for s in &xml.statements {
-                triple(&mut e, &format!("{}#{}", ns.name, s.name), s.range);
-            }
-            for m in &xml.result_maps {
-                e.definitions.push(Anchor { key: format!("{}::rm::{}", ns.name, m.name), range: m.range });
-            }
-            for f in &xml.sql_fragments {
-                e.definitions.push(Anchor { key: format!("{}::sql::{}", ns.name, f.name), range: f.range });
-            }
-            for r in xml.result_map_refs.iter().chain(xml.extends_refs.iter()) {
-                // A dotted name carries its own namespace; otherwise this file's.
-                let key = match r.name.rsplit_once('.') {
-                    Some((other, id)) if !xml.result_maps.iter().any(|m| m.name == r.name) => {
-                        format!("{other}::rm::{id}")
-                    }
-                    _ => format!("{}::rm::{}", ns.name, r.name),
-                };
-                e.references.push(Anchor { key, range: r.range });
-            }
-            for r in &xml.include_refs {
-                let key = match r.name.rsplit_once('.') {
-                    Some((other, id)) => format!("{other}::sql::{id}"),
-                    None => format!("{}::sql::{}", ns.name, r.name),
-                };
-                e.references.push(Anchor { key, range: r.range });
-            }
-            e
-        } else {
-            Edges::default()
-        }
-    }
-}
+// Navigation (gutter arrows, Go to Definition) is built into OpenIDEA
+// v0.1.44+; this module only serves completion now.
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use openidea_plugin::mock::MockHost;
-    use openidea_plugin::{TextMatch, TextSearch};
+    use openidea_plugin::{Location, TextMatch, TextSearch};
 
     const JAVA: &str = "package com.acme;\n\nimport org.apache.ibatis.annotations.Param;\n\npublic interface UserMapper {\n    User findById(@Param(\"id\") long id);\n\n    int insert(User user);\n\n    default void helper() {}\n\n    List<User> search(String name, int limit);\n}\n";
     const XML: &str = "<?xml version=\"1.0\"?>\n<mapper namespace=\"com.acme.UserMapper\">\n  <select id=\"findById\" resultType=\"User\">\n    select * from users where id = #{id}\n  </select>\n  <insert id=\"insert\">\n    insert into users values (#{user})\n  </insert>\n  <select id=\"\">\n  </select>\n</mapper>\n";
@@ -1187,14 +958,6 @@ mod tests {
         host
     }
 
-    fn annotated_setup() -> MockHost {
-        let host = MockHost::install();
-        host.add_file("src/main/java/com/acme/UserMapper.java", ANNOTATED);
-        add_mapper(&host, "src/main/resources/mapper/UserMapper.xml", ANNOTATED_XML);
-        host.add_file("pom.xml", "<project/>");
-        host
-    }
-
     /// Methods behind method-level annotations keep their names, parameters and
     /// positions: the scanner skips comments, strings and annotation arguments
     /// (nested annotations, `(` `)` `{` `}` `,` in strings) before the name.
@@ -1233,52 +996,8 @@ mod tests {
         assert_eq!(java.methods[0].1.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["id"]);
     }
 
-    /// Annotated methods still get both directions of navigation.
-    #[test]
-    fn navigates_annotated_methods() {
-        let _host = annotated_setup();
-        let mut n = Navigator::default();
-        let java = doc("/project/src/main/java/com/acme/UserMapper.java", "java", ANNOTATED);
-        let markers = n.line_markers(&java);
-        assert_eq!(markers.iter().map(|m| m.line).collect::<Vec<_>>(), [6, 11], "selectPlain has no statement");
-        assert_eq!(markers[1].tooltip, "Go to UserMapper.xml: findAnnotated");
-
-        let xml = doc("/project/src/main/resources/mapper/UserMapper.xml", "xml", ANNOTATED_XML);
-        let to_java = n.definition(&xml, Position::new(2, 20));
-        assert_eq!(to_java.len(), 1);
-        assert_eq!(
-            (to_java[0].path.ends_with("UserMapper.java"), to_java[0].range.start),
-            (true, Position::new(6, 15)),
-            "the XML statement jumps back to the annotated method"
-        );
-    }
-
     fn doc(path: &str, language: &str, text: &str) -> Document {
         Document { path: path.into(), language: language.into(), version: 1, text: text.into() }
-    }
-
-    #[test]
-    fn navigates_both_ways() {
-        let _host = setup();
-        let mut n = Navigator::default();
-        let java = doc("/project/src/main/java/com/acme/UserMapper.java", "java", JAVA);
-        let markers = n.line_markers(&java);
-        assert_eq!(markers.iter().map(|m| m.line).collect::<Vec<_>>(), [5, 7], "search has no statement");
-        assert_eq!(markers[0].tooltip, "Go to UserMapper.xml: findById");
-        let target = markers[0].target.as_ref().unwrap();
-        assert_eq!(
-            (target.path.as_str(), target.range.start),
-            ("/project/src/main/resources/mapper/UserMapper.xml", Position::new(2, 14))
-        );
-
-        let xml = doc("/project/src/main/resources/mapper/UserMapper.xml", "xml", XML);
-        let to_java = n.definition(&xml, Position::new(5, 15));
-        assert_eq!(to_java.len(), 1);
-        assert_eq!((to_java[0].path.ends_with("UserMapper.java"), to_java[0].range.start), (true, Position::new(7, 8)));
-        assert!(n.definition(&xml, Position::new(3, 5)).is_empty(), "not on an id");
-        let markers = n.line_markers(&xml);
-        assert_eq!(markers[0].tooltip, "Go to interface UserMapper");
-        assert_eq!(markers[1].tooltip, "Go to UserMapper.findById()");
     }
 
     #[test]
@@ -1333,45 +1052,6 @@ mod tests {
     }
 
     #[test]
-    fn navigates_namespace_result_maps_and_includes() {
-        let host = MockHost::install();
-        host.add_file(
-            "src/main/java/com/acme/OrderMapper.java",
-            "package com.acme;\npublic interface OrderMapper {\n}\n",
-        );
-        add_mapper(&host, "src/main/resources/mapper/OrderMapper.xml", REFS_XML);
-        host.add_file("pom.xml", "<project/>");
-        let mut n = Navigator::default();
-        let xml = doc("/project/src/main/resources/mapper/OrderMapper.xml", "xml", REFS_XML);
-
-        // `<mapper namespace>` → the interface; unresolvable refs link nowhere.
-        let to_iface = n.definition(&xml, Position::new(1, 25));
-        assert_eq!(to_iface.len(), 1);
-        assert_eq!(
-            (to_iface[0].path.ends_with("OrderMapper.java"), to_iface[0].range.start),
-            (true, Position::new(1, 17))
-        );
-        assert!(n.definition(&xml, Position::new(3, 40)).is_empty(), "userMap lives in no indexed file");
-
-        // `extends="orderMap"` → the parent resultMap; `refid` → the `<sql>` id.
-        let to_parent = n.definition(&xml, Position::new(5, 37));
-        assert_eq!(to_parent.len(), 1);
-        assert_eq!(to_parent[0].range.start, Position::new(2, 17));
-        let to_sql = n.definition(&xml, Position::new(8, 30));
-        assert_eq!(to_sql.len(), 1);
-        assert_eq!(to_sql[0].range.start, Position::new(6, 11));
-
-        // `namespace.id` form resolves within the same file.
-        let to_full = n.definition(&xml, Position::new(7, 45));
-        assert_eq!(to_full.len(), 1);
-        assert_eq!(to_full[0].range.start, Position::new(5, 17));
-
-        // `<include refid="` completes this file's `<sql>` ids.
-        let items = n.completion(&xml, Position::new(8, 29), None);
-        assert_eq!(items.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["baseColumns"]);
-    }
-
-    #[test]
     fn completes_ids_and_parameters() {
         let _host = setup();
         let mut n = Navigator::default();
@@ -1400,28 +1080,6 @@ mod tests {
         add_mapper(&host, "src/main/resources/mapper/UserMapper.xml", ANNOTATED_XML);
         host.add_file("pom.xml", "<project/>");
         host
-    }
-
-    /// `#{…}` inside an annotation's SQL jumps to the `@Param`/parameter, with
-    /// no XML statement involved (pure-annotation mappers work too).
-    #[test]
-    fn navigates_annotation_sql_params_to_params() {
-        let _host = annotation_setup();
-        let java = parse_java(ANNOTATED_SQL);
-        assert_eq!(java.annotation_sql.len(), 1);
-        assert_eq!(java.annotation_sql[0].params.iter().map(|o| o.name.as_str()).collect::<Vec<_>>(), ["id", "name"]);
-        let doc = doc("/project/src/main/java/com/acme/UserMapper.java", "java", ANNOTATED_SQL);
-        let mut n = Navigator::default();
-        let line = ANNOTATED_SQL.lines().nth(4).unwrap();
-        let col = line.find("#{id}").unwrap() + 3;
-        let got = n.definition(&doc, Position::new(4, col as u32));
-        let want = java.methods[0].1.iter().find(|p| p.name == "id").unwrap().range;
-        assert_eq!(got, vec![Location { path: doc.path.clone(), range: want }]);
-        // The second parameter resolves too.
-        let col = line.find("#{name}").unwrap() + 3;
-        let got = n.definition(&doc, Position::new(4, col as u32));
-        let want = java.methods[0].1.iter().find(|p| p.name == "name").unwrap().range;
-        assert_eq!(got, vec![Location { path: doc.path.clone(), range: want }]);
     }
 
     /// After `#{` inside an annotation's SQL string: the method's parameters.
@@ -1495,54 +1153,6 @@ mod tests {
         assert_eq!(xml.result_map_refs.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["userMap"]);
     }
 
-    /// `@ResultMap("…")` jumps to the XML `<resultMap>`, or to the
-    /// `@Results(id = "…")` in the same file; `resultMap="…"` in XML jumps to
-    /// the `<resultMap>`. All three get gutter markers.
-    #[test]
-    fn navigates_result_map_refs() {
-        let _host = result_setup();
-        let mut n = Navigator::default();
-        let java = doc("/project/src/main/java/com/acme/UserMapper.java", "java", RESULT_JAVA);
-        let xml = doc("/project/src/main/resources/mapper/UserMapper.xml", "xml", RESULT_XML);
-
-        // `@ResultMap("userMap")` → the XML `<resultMap id="userMap">`.
-        let line = RESULT_JAVA.lines().nth(7).unwrap();
-        let col = line.find("\"userMap\"").unwrap() + 2;
-        let got = n.definition(&java, Position::new(7, col as u32));
-        let want = parse_xml(RESULT_XML).result_maps[0].range;
-        assert_eq!(got, vec![Location { path: xml.path.clone(), range: want }]);
-
-        // `@ResultMap("orderMap")` → the `@Results(id = "orderMap")` above.
-        let line = RESULT_JAVA.lines().nth(14).unwrap();
-        let col = line.find("\"orderMap\"").unwrap() + 2;
-        let got = n.definition(&java, Position::new(14, col as u32));
-        let want = parse_java(RESULT_JAVA).result_ids[0].1.range;
-        assert_eq!(got, vec![Location { path: java.path.clone(), range: want }]);
-
-        // `resultMap="userMap"` in XML → the `<resultMap>` in the same file.
-        let line = RESULT_XML.lines().nth(6).unwrap();
-        let col = line.find("resultMap=\"userMap\"").unwrap() + 12;
-        let got = n.definition(&xml, Position::new(6, col as u32));
-        let want = parse_xml(RESULT_XML).result_maps[0].range;
-        assert_eq!(got, vec![Location { path: xml.path.clone(), range: want }]);
-
-        let mut markers: Vec<_> = n.line_markers(&java).into_iter().map(|m| (m.line, m.tooltip)).collect();
-        markers.sort();
-        assert_eq!(
-            markers,
-            [
-                (7, "Go to UserMapper.xml: userMap".to_owned()),
-                (8, "Go to UserMapper.xml: findById".to_owned()),
-                (14, "Go to UserMapper.findOrder(): orderMap".to_owned())
-            ]
-        );
-        let markers = n.line_markers(&xml);
-        assert_eq!(
-            markers.iter().map(|m| (m.line, m.tooltip.as_str())).collect::<Vec<_>>(),
-            [(1, "Go to interface UserMapper"), (6, "Go to UserMapper.findById()"), (6, "Go to resultMap userMap")]
-        );
-    }
-
     /// Inside `@ResultMap("…")`: annotation `@Results` ids and XML
     /// `<resultMap>` ids, merged and sorted — even while the string is still
     /// unterminated.
@@ -1570,73 +1180,5 @@ mod tests {
         let col = line.find("\"userMap\"").unwrap() + 1 + 2;
         let items = n.completion(&closed, Position::new(7, col as u32), None);
         assert_eq!(items.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["userMap"]);
-    }
-
-    #[test]
-    fn indexes_both_sides_into_edges() {
-        // Java: each method anchors definitions+references+markers at its name.
-        let java = openidea_plugin::indexing::Document {
-            path: "/p/UserMapper.java".into(),
-            text: JAVA.into(),
-            symbols: vec![],
-        };
-        let e = Navigator::default().index(&java);
-        assert_eq!(e.definitions.len(), 3, "four methods, the default one excluded");
-        assert_eq!(e.references.len(), 3);
-        assert_eq!(e.markers.len(), 3);
-        let keys: Vec<_> = e.definitions.iter().map(|a| a.key.as_str()).collect();
-        assert!(keys.contains(&"com.acme.UserMapper#findById"), "{keys:?}");
-        let by = e.definitions.iter().find(|a| a.key.ends_with("#findById")).unwrap();
-        assert_eq!(by.range.start.line, 5);
-        // XML: statements anchor the same keys at the id values.
-        let xml = openidea_plugin::indexing::Document {
-            path: "/p/UserMapper.xml".into(),
-            text: XML.into(),
-            symbols: vec![],
-        };
-        let e = Navigator::default().index(&xml);
-        assert_eq!(e.definitions.len(), 3, "findById, insert and the empty id");
-        assert_eq!(e.markers.len(), 3);
-        let by = e.definitions.iter().find(|a| a.key.ends_with("#findById")).unwrap();
-        assert_eq!(by.range.start.line, 2, "the id value line");
-        assert_eq!(by.range.start.character, 14, "inside id=\"...\"");
-        // A non-mapper file contributes nothing.
-        let plain = openidea_plugin::indexing::Document {
-            path: "/p/Util.java".into(),
-            text: "package com.acme;\nclass Util {}\n".into(),
-            symbols: vec![],
-        };
-        assert!(Navigator::default().index(&plain).definitions.is_empty());
-        let nonmapper_xml = openidea_plugin::indexing::Document {
-            path: "/p/pom.xml".into(),
-            text: "<project/>
-".into(),
-            symbols: vec![],
-        };
-        assert!(Navigator::default().index(&nonmapper_xml).definitions.is_empty());
-    }
-
-    #[test]
-    fn indexes_result_maps_and_annotation_params() {
-        const SQL: &str = concat!(
-            "package com.acme;\n\n",
-            "public interface UserMapper {\n",
-            "    @Select(\"SELECT * FROM users WHERE id = #{id}\")\n",
-            "    User findById(Long id);\n",
-            "}\n"
-        );
-        let java = openidea_plugin::indexing::Document {
-            path: "/p/UserMapper.java".into(),
-            text: SQL.into(),
-            symbols: vec![],
-        };
-        let e = Navigator::default().index(&java);
-        // `#{…}` inside `@Select` refers to the parameter (`Long id` — no @Param).
-        assert!(
-            e.references.iter().any(|a| a.key == "com.acme.UserMapper#findById::param::id"),
-            "{:?}",
-            e.references.iter().map(|a| a.key.as_str()).collect::<Vec<_>>()
-        );
-        assert!(e.definitions.iter().any(|a| a.key == "com.acme.UserMapper#findById::param::id"));
     }
 }

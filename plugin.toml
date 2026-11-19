@@ -1,10 +1,10 @@
 id = "qtvbwfn.mybatis-duo"
 name = "MyBatis Duo"
-version = "0.3.3"
-description = "MyBatis mapper navigation both ways (gutter arrows, Go to Definition, statement/parameter completion), statement generation, the @Param quickfix and SQL-log conversion."
+version = "0.3.4"
+description = "Mapper statement generation, statement/parameter completion, the @Param quickfix and SQL-log conversion. Navigation (gutter arrows, Go to Definition) comes with OpenIDEA v0.1.44+. 生成 Mapper Statement、语句/参数补全、@Param 快速修复与 SQL 日志转换；导航（行槽箭头、转到定义）由 OpenIDEA v0.1.44+ 内置提供。"
 authors = ["qtvbwfn"]
 license = "Apache-2.0"
-change-notes = "0.3.3 — mapper navigation both ways (gutter arrows, Go to Definition), statement and parameter completion, statement generation, the @Param quickfix and SQL-log conversion."
+change-notes = "0.3.4 — Removed the editor context-menu entries (commands stay in the Command Palette; the @Param quickfix stays in ⌥↵) and the navigation index (gutter arrows and Go to Definition are built into OpenIDEA v0.1.44+, so both no longer show twice). 移除编辑器右键菜单项（命令保留在命令面板；@Param 快速修复仍在 ⌥↵）与导航索引（行槽箭头和转到定义已由 OpenIDEA v0.1.44+ 内置，不再重复显示）。\n\n0.3.3 — mapper navigation both ways (gutter arrows, Go to Definition), statement and parameter completion, statement generation, the @Param quickfix and SQL-log conversion."
 categories = ["frameworks"]
 engines.openidea = "^1.5"
 wasm = "dist/plugin.wasm"
@@ -32,18 +32,3 @@ languages = ["java"]
 [[contributes.providers]]
 kinds = ["completion"]
 languages = ["java", "xml"]
-
-[[contributes.documentIndexers]]
-extensions = ["java", "xml"]
-
-[[contributes.menus]]
-menu = "editor.context"
-command = "generate-statement"
-
-[[contributes.menus]]
-menu = "editor.context"
-command = "create-mapper-xml"
-
-[[contributes.menus]]
-menu = "editor.context"
-command = "convert-sql-log"

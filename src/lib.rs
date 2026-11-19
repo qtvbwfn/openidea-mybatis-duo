@@ -1,8 +1,8 @@
-//! MyBatis Duo: mapper navigation both ways (gutter arrows, Go to
-//! Definition, statement/parameter completion — ported from the official
-//! `openidea.mybatis` plugin 0.4.1, see `nav.rs`), statement generation, the
-//! `@Param` quickfix and SQL-log conversion. One plugin for the whole set:
-//! disable the official Navigator to avoid double gutter arrows.
+//! MyBatis Duo: mapper statement generation, statement/parameter completion,
+//! the `@Param` quickfix and SQL-log conversion. Navigation (gutter arrows,
+//! Go to Definition) is built into OpenIDEA v0.1.44+ — the parsing ported
+//! from the official `openidea.mybatis` plugin 0.4.1 lives on in `nav.rs`
+//! for completion only.
 
 mod generate;
 mod i18n;
@@ -11,7 +11,6 @@ mod parse;
 mod sqllog;
 
 use i18n::{t, t_with};
-use openidea_plugin::indexing::DocumentIndexer;
 use openidea_plugin::providers::{CodeAction, CompletionItem, Document, Providers};
 use openidea_plugin::text::{offset, position};
 use openidea_plugin::{Error, Invocation, NotificationLevel, Plugin, Position, Range, TextEdit, host, register_plugin};
@@ -171,19 +170,10 @@ fn create_mapper_xml(ctx: &Invocation) -> Result<Option<String>, Error> {
     Ok(Some(target))
 }
 
-impl DocumentIndexer for MybatisPlus {
-    /// Background indexing: the host feeds documents in batches (the 5 s
-    /// command budget) and answers gutter arrows and Go to Definition from
-    /// the graph, so navigation never runs inside the 500 ms edit budget.
-    fn index(&mut self, doc: &openidea_plugin::indexing::Document) -> openidea_plugin::indexing::Edges {
-        self.nav.index(doc)
-    }
-}
-
 impl Providers for MybatisPlus {
     /// Statement ids, `<sql>` refids, `#{…}` parameters, result-map and
     /// annotation-SQL parameter completion. (Gutter arrows and Go to
-    /// Definition are answered from the index graph — see `DocumentIndexer`.)
+    /// Definition are answered by the host itself since v0.1.44.)
     fn completion(&mut self, doc: &Document, at: Position, trigger: Option<&str>) -> Vec<CompletionItem> {
         self.nav.completion(doc, at, trigger)
     }
@@ -227,7 +217,7 @@ impl Providers for MybatisPlus {
     }
 }
 
-register_plugin!(MybatisPlus, providers, indexing);
+register_plugin!(MybatisPlus, providers);
 
 #[cfg(test)]
 mod tests {
