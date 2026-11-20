@@ -337,7 +337,7 @@ public interface UserMapper {
 
     const MAPPER_XML: &str = "<?xml version=\"1.0\"?>\n\
                               <mapper namespace=\"com.example.mapper.UserMapper\">\n  \
-                              <select id=\"findByName\">\n    select 1\n  </select>\n</mapper>\n";
+                              <select id=\"findByName\">\n    select * from users where name = #{name} and size = #{size}\n  </select>\n</mapper>\n";
 
     /// A mapper XML found by the namespace search, as the host's Find in Files answers it.
     fn add_mapper(host: &MockHost) {
@@ -377,5 +377,36 @@ public interface UserMapper {
             host.opened_locations(),
             [("/project/src/main/resources/mapper/UserMapper.xml".to_owned(), 2, 14)]
         );
+    }
+
+    #[test]
+    fn index_publishes_namespace_and_xml_parameter_anchors() {
+        use openidea_plugin::indexing::Document as IndexDocument;
+        let mut plugin = MybatisPlus::default();
+        let java = IndexDocument { path: "/p/UserMapper.java".into(), text: MAPPER.into(), symbols: vec![] };
+        let edges = plugin.index(&java);
+        assert!(
+            edges.definitions.iter().any(|a| a.key == "mapper:com.example.mapper.UserMapper"),
+            "the interface declaration is a definition: {:?}",
+            edges.definitions.iter().map(|a| a.key.as_str()).collect::<Vec<_>>()
+        );
+        assert!(
+            edges.definitions.iter().any(|a| a.key.ends_with("#findByName::param::name")),
+            "each method parameter is a definition"
+        );
+
+        let xml = IndexDocument { path: "/p/UserMapper.xml".into(), text: MAPPER_XML.into(), symbols: vec![] };
+        let edges = plugin.index(&xml);
+        assert!(
+            edges.references.iter().any(|a| a.key == "mapper:com.example.mapper.UserMapper"),
+            "the namespace reaches the interface declaration"
+        );
+        for name in ["name", "size"] {
+            assert!(
+                edges.references.iter().any(|a| a.key.ends_with(&format!("#findByName::param::{name}"))),
+                "#{{{name}}} reaches the method parameter: {:?}",
+                edges.references.iter().map(|a| a.key.as_str()).collect::<Vec<_>>()
+            );
+        }
     }
 }

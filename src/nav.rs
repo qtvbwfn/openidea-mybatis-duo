@@ -164,6 +164,33 @@ pub fn parse_xml(text: &str) -> MapperXml {
     out
 }
 
+/// The body span of every `<select|insert|update|delete id="…">` in an XML
+/// text: `(id, body_start, body_end)` byte offsets. Self-closing statements have
+/// no body and are left out.
+fn statement_bodies(text: &str) -> Vec<(String, usize, usize)> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while let Some(i) = text[at..].find('<') {
+        let start = at + i + 1;
+        at = start;
+        let name: String = text[start..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+        if !STATEMENTS.contains(&name.as_str()) {
+            continue;
+        }
+        let Some(close) = text[start..].find('>').map(|i| start + i) else { continue };
+        let tag = &text[start..close];
+        let Some(id_at) = tag.find("id=\"") else { continue };
+        let id_start = start + id_at + 4;
+        let Some(id_len) = text[id_start..].find('"') else { continue };
+        let id = text[id_start..id_start + id_len].to_owned();
+        let body_start = close + 1;
+        let Some(body_len) = text[body_start..].find(&format!("</{name}>")) else { continue };
+        out.push((id, body_start, body_start + body_len));
+        at = body_start + body_len;
+    }
+    out
+}
+
 fn ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '$'
 }
@@ -859,6 +886,14 @@ impl Navigator {
             }
             if let Some((path, xml)) = xml {
                 let file = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
+                // The interface name points back at its `<mapper namespace="…">`.
+                if let (Some(decl), Some(ns)) = (java.decl.clone(), xml.namespace.clone()) {
+                    out.push((
+                        decl,
+                        Location { path: path.clone(), range: ns.range },
+                        format!("{file}: namespace {simple}"),
+                    ));
+                }
                 out.extend(java.methods.into_iter().filter_map(|(m, _)| {
                     let s = xml.statements.iter().find(|s| s.name == m.name)?;
                     Some((m, Location { path: path.clone(), range: s.range }, format!("{file}: {}", s.name)))
@@ -1056,10 +1091,20 @@ impl DocumentIndexer for Navigator {
             let java = parse_java(&doc.text);
             let Some(name) = java.name.clone() else { return Edges::default() };
             let mut e = Edges::default();
+            // The interface itself: the XML `<mapper namespace="…">` points here,
+            // and the interface name's own arrow points back at that line.
+            if let Some(decl) = java.decl.clone() {
+                triple(&mut e, &anchor_key(&name), decl.range);
+            }
             for (m, params) in &java.methods {
                 let key = anchor_key(&format!("{name}#{}", m.name));
                 triple(&mut e, &key, m.range);
-                // `#{…}` / `${…}` inside the method's annotation SQL goes to the
+                // Every parameter is a definition: the `#{…}` / `${…}` in the
+                // method's annotation SQL and in its XML statement body point here.
+                for p in params {
+                    e.definitions.push(Anchor { key: format!("{key}::param::{}", p.name), range: p.range });
+                }
+                // `#{…}` / `${…}` inside the method's annotation SQL refers to the
                 // parameter (`@Param("…")` wins), as the provider definition did.
                 let dotted = java
                     .annotation_sql
@@ -1070,7 +1115,6 @@ impl DocumentIndexer for Navigator {
                         let first = occ.name.split('.').next().unwrap_or("");
                         if let Some(p) = params.iter().find(|p| p.name == first) {
                             e.references.push(Anchor { key: format!("{key}::param::{}", p.name), range: occ.range });
-                            e.definitions.push(Anchor { key: format!("{key}::param::{}", p.name), range: p.range });
                         }
                     }
                 }
@@ -1091,8 +1135,25 @@ impl DocumentIndexer for Navigator {
             let xml = parse_xml(&doc.text);
             let Some(ns) = xml.namespace.clone() else { return Edges::default() };
             let mut e = Edges::default();
+            // `<mapper namespace>` → the interface declaration (the marker draws
+            // the gutter arrow on that line).
+            // `<mapper namespace>` ↔ the interface declaration: both sides carry
+            // the arrow, so either line jumps to the other (issue #3).
+            triple(&mut e, &anchor_key(&ns.name), ns.range.clone());
             for s in &xml.statements {
                 triple(&mut e, &anchor_key(&format!("{}#{}", ns.name, s.name)), s.range);
+            }
+            // `#{…}` / `${…}` in a statement body → the method parameter of that
+            // name (the Java side publishes the definitions).
+            for (id, start, end) in statement_bodies(&doc.text) {
+                let key = anchor_key(&format!("{}#{}", ns.name, id));
+                for (name, from, to) in sql_params(&doc.text[start..end]) {
+                    let first = name.split('.').next().unwrap_or("");
+                    e.references.push(Anchor {
+                        key: format!("{key}::param::{first}"),
+                        range: range_of(&doc.text, start + from, start + to),
+                    });
+                }
             }
             for m in &xml.result_maps {
                 e.definitions.push(Anchor {
@@ -1261,8 +1322,12 @@ mod tests {
         let mut n = Navigator::default();
         let java = doc("/project/src/main/java/com/acme/UserMapper.java", "java", ANNOTATED);
         let markers = n.line_markers(&java);
-        assert_eq!(markers.iter().map(|m| m.line).collect::<Vec<_>>(), [6, 11], "selectPlain has no statement");
-        assert_eq!(markers[1].tooltip, "Go to UserMapper.xml: findAnnotated");
+        assert_eq!(
+            markers.iter().map(|m| m.line).collect::<Vec<_>>(),
+            [4, 6, 11],
+            "the interface and the two statements (selectPlain has no statement)"
+        );
+        assert_eq!(markers[2].tooltip, "Go to UserMapper.xml: findAnnotated");
 
         let xml = doc("/project/src/main/resources/mapper/UserMapper.xml", "xml", ANNOTATED_XML);
         let to_java = n.definition(&xml, Position::new(2, 20));
@@ -1284,9 +1349,10 @@ mod tests {
         let mut n = Navigator::default();
         let java = doc("/project/src/main/java/com/acme/UserMapper.java", "java", JAVA);
         let markers = n.line_markers(&java);
-        assert_eq!(markers.iter().map(|m| m.line).collect::<Vec<_>>(), [5, 7], "search has no statement");
-        assert_eq!(markers[0].tooltip, "Go to UserMapper.xml: findById");
-        let target = markers[0].target.as_ref().unwrap();
+        assert_eq!(markers.iter().map(|m| m.line).collect::<Vec<_>>(), [4, 5, 7], "the interface and the two statements");
+        assert_eq!(markers[0].tooltip, "Go to UserMapper.xml: namespace UserMapper");
+        assert_eq!(markers[1].tooltip, "Go to UserMapper.xml: findById");
+        let target = markers[1].target.as_ref().unwrap();
         assert_eq!(
             (target.path.as_str(), target.range.start),
             ("/project/src/main/resources/mapper/UserMapper.xml", Position::new(2, 14))
@@ -1552,6 +1618,7 @@ mod tests {
         assert_eq!(
             markers,
             [
+                (5, "Go to UserMapper.xml: namespace UserMapper".to_owned()),
                 (7, "Go to UserMapper.xml: userMap".to_owned()),
                 (8, "Go to UserMapper.xml: findById".to_owned()),
                 (14, "Go to UserMapper.findOrder(): orderMap".to_owned())
@@ -1602,22 +1669,31 @@ mod tests {
             symbols: vec![],
         };
         let e = Navigator::default().index(&java);
-        assert_eq!(e.definitions.len(), 3, "four methods, the default one excluded");
-        assert_eq!(e.references.len(), 3);
-        assert_eq!(e.markers.len(), 3);
+        // Three methods (the default one excluded), each with its parameters, plus the interface itself.
+        assert_eq!(e.definitions.len(), 3 + 4 + 1);
+        assert_eq!(e.references.len(), 4, "the three method names and the interface");
+        assert_eq!(e.markers.len(), 4, "the three method names and the interface");
         let keys: Vec<_> = e.definitions.iter().map(|a| a.key.as_str()).collect();
         assert!(keys.contains(&"mapper:com.acme.UserMapper#findById"), "{keys:?}");
+        assert!(keys.contains(&"mapper:com.acme.UserMapper"), "the interface declaration: {keys:?}");
+        assert!(keys.contains(&"mapper:com.acme.UserMapper#findById::param::id"), "its parameter: {keys:?}");
         let by = e.definitions.iter().find(|a| a.key.ends_with("#findById")).unwrap();
         assert_eq!(by.range.start.line, 5);
-        // XML: statements anchor the same keys at the id values.
+        // XML: statements anchor the same keys at the id values, the namespace
+        // reaches the interface, and `#{…}` reaches the parameters.
         let xml = openidea_plugin::indexing::Document {
             path: "/p/UserMapper.xml".into(),
             text: XML.into(),
             symbols: vec![],
         };
         let e = Navigator::default().index(&xml);
-        assert_eq!(e.definitions.len(), 3, "findById, insert and the empty id");
-        assert_eq!(e.markers.len(), 3);
+        assert_eq!(e.definitions.len(), 4, "findById, insert, the empty id and the namespace");
+        assert_eq!(e.references.len(), 6, "three statement names, the namespace and the two `#{{…}}` occurrences");
+        assert_eq!(e.markers.len(), 4, "three statements and the namespace");
+        let keys: Vec<_> = e.references.iter().map(|a| a.key.as_str()).collect();
+        assert!(keys.contains(&"mapper:com.acme.UserMapper"), "the namespace: {keys:?}");
+        assert!(keys.contains(&"mapper:com.acme.UserMapper#findById::param::id"), "{keys:?}");
+        assert!(keys.contains(&"mapper:com.acme.UserMapper#insert::param::user"), "{keys:?}");
         let by = e.definitions.iter().find(|a| a.key.ends_with("#findById")).unwrap();
         assert_eq!(by.range.start.line, 2, "the id value line");
         assert_eq!(by.range.start.character, 14, "inside id=\"...\"");
