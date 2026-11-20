@@ -1,15 +1,44 @@
 //! MyBatis console log → executable SQL (BatsLog-style): every `==>  Preparing:`
 //! statement gets its `?` placeholders filled from the following
-//! `==> Parameters: v1(T1), v2(T2)` line — numbers raw, strings quoted and
-//! escaped, null → NULL. Several pairs in the selection become several
-//! statements, joined with `;\n\n`, each ending in `;`. The SQL text itself is
-//! kept exactly as MyBatis logged it (no formatting).
+//! `==> Parameters: v1(T1), v2(T2)` line — the logged type decides (numbers and
+//! booleans print raw, strings, characters, dates and timestamps are quoted and
+//! escaped, and a local date-time's ISO `T` becomes a space, so
+//! `00123(String)` keeps its leading zeros and `2024-05-01T10:20:30` is a
+//! timestamp literal), and only untyped values fall back to guessing. A `null`
+//! value is SQL `NULL` whatever type the log names beside it. Several pairs in
+//! the selection become several statements, joined with `;\n\n`, each ending in
+//! joined with `;\n\n`, each ending in `;`. The SQL text itself is kept exactly
+//! as MyBatis logged it (no formatting).
 //!
 //! shortcut: parameters must sit on one line (MyBatis prints them so), and a
 //! value literally containing `), ` cannot be round-tripped.
 
-const NUMERIC_TYPES: &[&str] =
-    &["Long", "Integer", "Short", "Byte", "Double", "Float", "BigDecimal", "BigInteger"];
+/// Types whose logged value is already a SQL literal.
+const NUMERIC_TYPES: &[&str] = &[
+    "Long", "Integer", "Short", "Byte", "Double", "Float", "BigDecimal", "BigInteger", "Number",
+    "AtomicInteger", "AtomicLong", "long", "int", "short", "byte", "double", "float",
+];
+/// Types whose logged value is already a SQL boolean literal.
+const BOOLEAN_TYPES: &[&str] = &["Boolean", "boolean", "AtomicBoolean"];
+/// Date/time types: their text needs quotes, but `null` is SQL NULL — unlike
+/// a text type, a temporal value has no `"null"` text form to quote.
+const TEMPORAL_TYPES: &[&str] = &[
+    "Date",
+    "Time",
+    "Timestamp",
+    "LocalDate",
+    "LocalTime",
+    "LocalDateTime",
+    "OffsetDateTime",
+    "OffsetTime",
+    "ZonedDateTime",
+    "Instant",
+    "Year",
+    "YearMonth",
+    "MonthDay",
+    "Duration",
+    "Period",
+];
 
 struct ParsedParam {
     value: String,
@@ -65,19 +94,54 @@ fn is_number(v: &str) -> bool {
 }
 
 fn format_value(p: &ParsedParam) -> String {
+    // `null` is SQL NULL whatever the type says: MyBatis prints a null with no
+    // value text, and a String whose text reads `null` is indistinguishable in
+    // the log — the converter picks the SQL meaning.
     if p.value == "null" {
         return "NULL".to_string();
     }
-    if let Some(ty) = &p.ty {
-        if NUMERIC_TYPES.contains(&ty.as_str()) || ty == "Boolean" {
-            return p.value.clone();
-        }
+    let Some(ty) = &p.ty else {
+        // Untyped: MyBatis logs a bare `null` (handled above); any other bare
+        // value keeps the guess (only hand-edited logs reach this path).
+        return if is_number(&p.value) || p.value == "true" || p.value == "false" {
+            p.value.clone()
+        } else {
+            quote(&p.value)
+        };
+    };
+    // The log names the type: honour it instead of guessing from the text, or
+    // `00123(String)` loses its zeros and `true(String)` becomes a bool.
+    let ty = ty.rsplit('.').next().unwrap_or(ty); // java.lang.String → String
+    if NUMERIC_TYPES.contains(&ty) {
+        // Numbers print raw; a value that isn't a number is quoted rather than
+        // emitted as broken SQL.
+        return if is_number(&p.value) { p.value.clone() } else { quote(&p.value) };
     }
-    // Typeless values (only null normally) fall back to a numeric / boolean guess.
-    if is_number(&p.value) || p.value == "true" || p.value == "false" {
-        return p.value.clone();
+    if BOOLEAN_TYPES.contains(&ty) {
+        return if p.value == "true" || p.value == "false" { p.value.clone() } else { quote(&p.value) };
     }
-    format!("'{}'", p.value.replace('\'', "''"))
+    if TEMPORAL_TYPES.contains(&ty) {
+        // `LocalDateTime` and friends print with an ISO `T`; MySQL and Oracle
+        // only parse the space form. Offsets and `Z` stay as logged — a
+        // literal with a zone needs a dialect-specific cast.
+        return quote(&local_datetime(&p.value).unwrap_or_else(|| p.value.clone()));
+    }
+    // String, Character and unknown types: quote and escape.
+    quote(&p.value)
+}
+
+/// `2024-05-01T10:20:30.123` → `2024-05-01 10:20:30.123`, and nothing for
+/// values that carry an offset or `Z` (or are not a local date-time at all).
+fn local_datetime(value: &str) -> Option<String> {
+    let (date, time) = value.split_once('T')?;
+    let date_ok = date.len() == 10
+        && date.bytes().enumerate().all(|(i, b)| if i == 4 || i == 7 { b == b'-' } else { b.is_ascii_digit() });
+    let time_ok = !time.is_empty() && time.bytes().all(|b| b.is_ascii_digit() || b == b':' || b == b'.');
+    (date_ok && time_ok).then(|| format!("{date} {time}"))
+}
+
+fn quote(v: &str) -> String {
+    format!("'{}'", v.replace('\'', "''"))
 }
 
 fn fill_params(sql: &str, params: &[ParsedParam]) -> String {
@@ -161,6 +225,89 @@ mod tests {
         let log = "==>  Preparing: select ?, ?\n\
                    ==> Parameters: null, 3.5(Double)\n";
         assert_eq!(convert(log).as_deref(), Some("select NULL, 3.5;"));
+    }
+
+    #[test]
+    fn honours_explicit_string_type() {
+        // Issue #2: the logged `(String)` must win over the numeric/boolean shape
+        // of the value (`00123` is not 123, `true` is not a bool).
+        let log = "==>  Preparing: select * from users where code = ? and flag = ? and extra = ?\n\
+                   ==> Parameters: 00123(String), true(String), null(String)\n";
+        assert_eq!(
+            convert(log).as_deref(),
+            Some("select * from users where code = '00123' and flag = 'true' and extra = NULL;")
+        );
+    }
+
+    #[test]
+    fn qualified_type_names_are_normalised() {
+        let log = "==>  Preparing: select ?, ?\n\
+                   ==> Parameters: 7(java.lang.Long), 00123(java.lang.String)\n";
+        assert_eq!(convert(log).as_deref(), Some("select 7, '00123';"));
+    }
+
+    #[test]
+    fn every_type_category_keeps_its_sql_shape() {
+        let log = "==>  Preparing: select ?, ?, ?, ?, ?, ?, ?, ?\n\
+                   ==> Parameters: 42(Long), 3.5(BigDecimal), 007(Integer), true(Boolean), \
+                   2024-05-01(Date), 2024-05-01 10:20:30.0(Timestamp), 10:20:30(LocalTime), a(Character)\n";
+        assert_eq!(
+            convert(log).as_deref(),
+            Some("select 42, 3.5, 007, true, '2024-05-01', '2024-05-01 10:20:30.0', '10:20:30', 'a';")
+        );
+    }
+
+    #[test]
+    fn iso_local_date_times_use_the_space_form() {
+        // LocalDateTime prints `2024-05-01T10:20:30`; MySQL and Oracle parse
+        // the space form, so the `T` becomes one. A value with a zone is kept
+        // exactly as logged (writing it as a literal depends on the dialect).
+        let log = "==>  Preparing: select ?\n\
+                   ==> Parameters: 2024-05-01T10:20:30(LocalDateTime)\n\
+                   ==>  Preparing: select ?\n\
+                   ==> Parameters: 2024-05-01T10:20:30.123(LocalDateTime)\n\
+                   ==>  Preparing: select ?\n\
+                   ==> Parameters: 2024-05-01T02:20:30Z(Instant)\n\
+                   ==>  Preparing: select ?\n\
+                   ==> Parameters: 2024-05-01T10:20:30+08:00(OffsetDateTime)\n";
+        assert_eq!(
+            convert(log).as_deref(),
+            Some(
+                "select '2024-05-01 10:20:30';\n\nselect '2024-05-01 10:20:30.123';\n\n\
+                 select '2024-05-01T02:20:30Z';\n\nselect '2024-05-01T10:20:30+08:00';"
+            )
+        );
+    }
+
+    #[test]
+    fn null_is_sql_null_whatever_the_type() {
+        // The log prints a null with no value text, so `null` means SQL NULL
+        // even beside a text type (a String reading "null" is not told apart).
+        let log = "==>  Preparing: select ?, ?, ?, ?, ?\n\
+                   ==> Parameters: null(String), null(Long), null(Timestamp), null(Boolean), null\n";
+        assert_eq!(convert(log).as_deref(), Some("select NULL, NULL, NULL, NULL, NULL;"));
+    }
+
+    #[test]
+    fn a_value_out_of_shape_for_its_type_is_quoted() {
+        // Hand-edited logs can put text where the type says number: never emit
+        // it raw as broken SQL.
+        let log = "==>  Preparing: select ?, ?\n\
+                   ==> Parameters: not-a-number(Long), yes(Boolean)\n";
+        assert_eq!(convert(log).as_deref(), Some("select 'not-a-number', 'yes';"));
+    }
+
+    #[test]
+    fn untyped_values_fall_back_to_guessing() {
+        // Only a bare `null` is untyped in a real log; the guess stays for
+        // hand-edited input.
+        let log = "==>  Preparing: select ?\n\
+                   ==> Parameters: 42\n\
+                   ==>  Preparing: select ?\n\
+                   ==> Parameters: true\n\
+                   ==>  Preparing: select ?\n\
+                   ==> Parameters: abc\n";
+        assert_eq!(convert(log).as_deref(), Some("select 42;\n\nselect true;\n\nselect 'abc';"));
     }
 
     #[test]

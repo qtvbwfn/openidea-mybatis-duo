@@ -1,10 +1,10 @@
 id = "qtvbwfn.mybatis-duo"
 name = "MyBatis Duo"
-version = "0.3.4"
-description = "Mapper statement generation, statement/parameter completion, the @Param quickfix and SQL-log conversion. Navigation (gutter arrows, Go to Definition) comes with OpenIDEA v0.1.44+. 生成 Mapper Statement、语句/参数补全、@Param 快速修复与 SQL 日志转换；导航（行槽箭头、转到定义）由 OpenIDEA v0.1.44+ 内置提供。"
+version = "0.3.5"
+description = "Mapper navigation both ways (gutter arrows, Go to Definition), statement generation and completion, the @Param quickfix and SQL-log conversion. Uninstall the official MyBatis Navigator first: both navigate, and two of them show every gutter arrow twice. Mapper 双向导航（行槽箭头、转到定义）、Mapper Statement 生成与补全、@Param 快速修复与 SQL 日志转换。安装前请先卸载官方 MyBatis Navigator：两者都提供导航，同时启用会重复显示行槽箭头。"
 authors = ["qtvbwfn"]
 license = "Apache-2.0"
-change-notes = "0.3.4 — Removed the editor context-menu entries (commands stay in the Command Palette; the @Param quickfix stays in ⌥↵) and the navigation index (gutter arrows and Go to Definition are built into OpenIDEA v0.1.44+, so both no longer show twice). 移除编辑器右键菜单项（命令保留在命令面板；@Param 快速修复仍在 ⌥↵）与导航索引（行槽箭头和转到定义已由 OpenIDEA v0.1.44+ 内置，不再重复显示）。\n\n0.3.3 — mapper navigation both ways (gutter arrows, Go to Definition), statement and parameter completion, statement generation, the @Param quickfix and SQL-log conversion."
+change-notes = "0.3.5 — Navigation is back: gutter arrows and Go to Definition between a mapper interface and its XML (statements, result maps, sql/include, namespaces and annotation SQL), answered from the plugin's index graph; mapper links use a blue double-arrow badge that stands out from the default gutter glyph. A new command `MyBatis Duo: Go to Mapper XML` jumps from a mapper method to its XML statement and back — the command's declared shortcut is ⌥⌘B (Ctrl+Alt+B elsewhere); the IDE owns that key for Go to Implementation (Navigation Bar in the Eclipse keymap) and a plugin shortcut never takes a key the IDE already uses, so free that binding — or assign this command ⌥⌘B — in Settings › Keymap. Uninstall or disable the official MyBatis Navigator: `openidea.mybatis` and `qtvbwfn.mybatis-duo` are separate plugins and the host cannot tell them apart, so both would draw the same arrows twice. SQL-log conversion now reads the logged parameter type: numbers and booleans stay literal, strings, characters, dates and timestamps are quoted and escaped (00123(String) becomes '00123'), and a null value is SQL NULL whatever the type. 导航恢复：Mapper 接口与 XML 之间的行槽箭头与转到定义（语句、resultMap、sql/include、namespace 与注解 SQL），由插件索引图回答；跳转图标换成醒目的蓝色双向箭头徽标。新增命令「MyBatis Duo：转到 Mapper XML」：从 Mapper 方法直达对应 XML 语句（反向同理），本命令声明的快捷键是 ⌥⌘B（其他平台 Ctrl+Alt+B）；该键在 IDE 里属于「转到实现」（Eclipse 预设里是导航栏），而插件快捷键不会抢占 IDE 已用的键，需在 设置 › 按键映射 里释放该绑定或把本命令绑到 ⌥⌘B 才生效。请先卸载或停用官方 MyBatis Navigator：`openidea.mybatis` 与 `qtvbwfn.mybatis-duo` 是两个独立插件，宿主无法区分，两者同时启用会把同一处箭头画两遍。SQL 日志转换按日志里的参数类型处理：数字与布尔保持原样，字符串、字符、日期与时间戳加引号并转义（00123(String) → '00123'），null 一律输出 SQL NULL。\n\n0.3.4 — Removed the editor context-menu entries (commands stay in the Command Palette; the @Param quickfix stays in ⌥↵) and the navigation index. 移除编辑器右键菜单项（命令保留在命令面板；@Param 快速修复仍在 ⌥↵）与导航索引。\n\n0.3.3 — mapper navigation both ways (gutter arrows, Go to Definition), statement and parameter completion, statement generation, the @Param quickfix and SQL-log conversion."
 categories = ["frameworks"]
 engines.openidea = "^1.5"
 wasm = "dist/plugin.wasm"
@@ -25,6 +25,18 @@ title = "MyBatis Duo: Create Mapper XML"
 id = "convert-sql-log"
 title = "MyBatis Duo: Convert SQL Log to SQL"
 
+[[contributes.commands]]
+id = "goto-mapper-xml"
+title = "MyBatis Duo: Go to Mapper XML"
+
+# ⌥⌘B / Ctrl+Alt+B is the IDE's Go to Implementation (Navigation Bar in the
+# Eclipse keymap); a plugin shortcut never takes a key the IDE already uses, so
+# free that binding (or assign this command ⌥⌘B) in Settings › Keymap to use it.
+[[contributes.keymaps]]
+command = "goto-mapper-xml"
+key = "Ctrl+Alt+B"
+mac = "Alt+Meta+B"
+
 [[contributes.providers]]
 kinds = ["code-actions"]
 languages = ["java"]
@@ -32,3 +44,13 @@ languages = ["java"]
 [[contributes.providers]]
 kinds = ["completion"]
 languages = ["java", "xml"]
+
+[[contributes.documentIndexers]]
+extensions = ["java", "xml"]
+
+# Every mapper link (statement ids, result maps, sql/include, @Param) wears the
+# same high-contrast badge instead of the faint default navigate glyph.
+[[contributes.markerIcons]]
+id = "mapper"
+icon = "icons/mapper.svg"
+markers = ["mapper:"]

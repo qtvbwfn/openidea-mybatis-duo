@@ -1,8 +1,8 @@
-//! MyBatis Duo: mapper statement generation, statement/parameter completion,
-//! the `@Param` quickfix and SQL-log conversion. Navigation (gutter arrows,
-//! Go to Definition) is built into OpenIDEA v0.1.44+ — the parsing ported
-//! from the official `openidea.mybatis` plugin 0.4.1 lives on in `nav.rs`
-//! for completion only.
+//! MyBatis Duo: mapper navigation both ways (gutter arrows, Go to Definition,
+//! statement/parameter completion — ported from the official `openidea.mybatis`
+//! plugin 0.4.1, see `nav.rs`), statement generation, the `@Param` quickfix and
+//! SQL-log conversion. One plugin for the whole set: disable the official
+//! Navigator to avoid double gutter arrows.
 
 mod generate;
 mod i18n;
@@ -11,9 +11,12 @@ mod parse;
 mod sqllog;
 
 use i18n::{t, t_with};
+use openidea_plugin::indexing::DocumentIndexer;
 use openidea_plugin::providers::{CodeAction, CompletionItem, Document, Providers};
 use openidea_plugin::text::{offset, position};
-use openidea_plugin::{Error, Invocation, NotificationLevel, Plugin, Position, Range, TextEdit, host, register_plugin};
+use openidea_plugin::{
+    Error, Invocation, NotificationLevel, PickItem, Plugin, Position, Range, TextEdit, host, register_plugin,
+};
 
 #[derive(Default)]
 struct MybatisPlus {
@@ -27,9 +30,60 @@ impl Plugin for MybatisPlus {
             "convert-sql-log" => convert_sql_log(ctx),
             "generate-statement" => generate_statement(ctx),
             "create-mapper-xml" => create_mapper_xml(ctx),
+            "goto-mapper-xml" => goto_mapper_xml(&mut self.nav, ctx),
             other => Err(Error::NotFound(format!("command {other}"))),
         }
     }
+}
+
+/// `Go to Mapper XML`: the caret on a mapper method opens its XML statement (or
+/// `@Param`, result map, `<include>` target); an XML statement id opens the
+/// method. Several targets are offered in a picker. This is the direct jump the
+/// host's ⌘B no longer gives on a declaration (it shows usages there).
+fn goto_mapper_xml(nav: &mut nav::Navigator, ctx: &Invocation) -> Result<Option<String>, Error> {
+    let editor = ctx.editor().ok_or_else(|| Error::Invalid(t("no file is open in the editor")))?;
+    let text = editor.document()?;
+    let doc = Document {
+        path: editor.path(),
+        language: editor.language(),
+        version: text.version,
+        text: text.text,
+    };
+    let selections = editor.selections()?;
+    let Some(selection) = selections.first() else { return Ok(None) };
+    let Some(cursor) = offset(&doc.text, selection.start) else { return Ok(None) };
+    let targets = nav.definition(&doc, position(&doc.text, cursor));
+    if targets.is_empty() {
+        host::notify(
+            NotificationLevel::Warning,
+            "MyBatis Duo",
+            &t("Put the caret on a mapper method or an XML statement id"),
+        );
+        return Ok(None);
+    }
+    let index = if targets.len() == 1 {
+        0
+    } else {
+        let items: Vec<PickItem> = targets
+            .iter()
+            .enumerate()
+            .map(|(i, target)| {
+                let file = target.path.rsplit(['/', '\\']).next().unwrap_or(&target.path).to_owned();
+                PickItem {
+                    key: i.to_string(),
+                    label: format!("{file}:{}", target.range.start.line + 1),
+                    description: Some(target.path.clone()),
+                }
+            })
+            .collect();
+        match host::pick(&t("Go to Mapper"), &items)? {
+            Some(key) => key.parse().unwrap_or(0),
+            None => return Ok(None),
+        }
+    };
+    let target = &targets[index];
+    host::open_location(&target.path, target.range.start.line, target.range.start.character)?;
+    Ok(Some(target.path.clone()))
 }
 
 /// `Copy MyBatis SQL` for the editor selection: the converter is pure, the
@@ -170,10 +224,19 @@ fn create_mapper_xml(ctx: &Invocation) -> Result<Option<String>, Error> {
     Ok(Some(target))
 }
 
+impl DocumentIndexer for MybatisPlus {
+    /// Background indexing: the host feeds documents in batches (the 5 s
+    /// command budget) and answers gutter arrows and Go to Definition from
+    /// the graph, so navigation never runs inside the 500 ms edit budget.
+    fn index(&mut self, doc: &openidea_plugin::indexing::Document) -> openidea_plugin::indexing::Edges {
+        self.nav.index(doc)
+    }
+}
+
 impl Providers for MybatisPlus {
     /// Statement ids, `<sql>` refids, `#{…}` parameters, result-map and
     /// annotation-SQL parameter completion. (Gutter arrows and Go to
-    /// Definition are answered by the host itself since v0.1.44.)
+    /// Definition are answered from the index graph — see `DocumentIndexer`.)
     fn completion(&mut self, doc: &Document, at: Position, trigger: Option<&str>) -> Vec<CompletionItem> {
         self.nav.completion(doc, at, trigger)
     }
@@ -217,7 +280,7 @@ impl Providers for MybatisPlus {
     }
 }
 
-register_plugin!(MybatisPlus, providers);
+register_plugin!(MybatisPlus, providers, indexing);
 
 #[cfg(test)]
 mod tests {
@@ -259,5 +322,60 @@ public interface UserMapper {
             .unwrap();
         assert_eq!(out.as_deref(), Some("select 1;"));
         assert_eq!(host.clipboard().as_deref(), Some("select 1;"));
+    }
+
+    #[test]
+    fn a_string_typed_number_reaches_the_clipboard_quoted() {
+        // Issue #2 end to end: the command and the clipboard, not just `sqllog::convert`.
+        let host = MockHost::install();
+        let log = "==>  Preparing: select * from users where code = ?\n==> Parameters: 00123(String)\n";
+        host.open_editor("/p/a.log", "log", log, &[(0, 0, 2, 0)]);
+        let out = MybatisPlus::default().run_command("convert-sql-log", &host.invocation(), None).unwrap();
+        assert_eq!(out.as_deref(), Some("select * from users where code = '00123';"));
+        assert_eq!(host.clipboard().as_deref(), Some("select * from users where code = '00123';"));
+    }
+
+    const MAPPER_XML: &str = "<?xml version=\"1.0\"?>\n\
+                              <mapper namespace=\"com.example.mapper.UserMapper\">\n  \
+                              <select id=\"findByName\">\n    select 1\n  </select>\n</mapper>\n";
+
+    /// A mapper XML found by the namespace search, as the host's Find in Files answers it.
+    fn add_mapper(host: &MockHost) {
+        host.add_file("src/main/resources/mapper/UserMapper.xml", MAPPER_XML);
+        host.on_search(move |query, _| {
+            assert!(query.regex && query.include == ["**/*.xml"], "{query:?}");
+            let namespace = query.pattern.split(r#"["']"#).nth(1).unwrap_or_default().replace('\\', "");
+            let line = MAPPER_XML.lines().position(|l| l.contains(&format!("namespace=\"{namespace}\"")));
+            let matches = line
+                .map(|line| openidea_plugin::TextMatch {
+                    location: openidea_plugin::Location {
+                        path: "/project/src/main/resources/mapper/UserMapper.xml".into(),
+                        range: Range::new(Position::new(line as u32, 0), Position::new(line as u32, 0)),
+                    },
+                    line: String::new(),
+                })
+                .into_iter()
+                .collect();
+            Ok(openidea_plugin::TextSearch { matches, limit_hit: false })
+        });
+    }
+
+    #[test]
+    fn goto_mapper_xml_opens_the_statement() {
+        let host = MockHost::install();
+        host.add_file("src/main/java/com/example/mapper/UserMapper.java", MAPPER);
+        add_mapper(&host);
+        host.open_editor(
+            "/project/src/main/java/com/example/mapper/UserMapper.java",
+            "java",
+            MAPPER,
+            &[(5, 20, 5, 20)],
+        );
+        let out = MybatisPlus::default().run_command("goto-mapper-xml", &host.invocation(), None).unwrap();
+        assert_eq!(out.as_deref(), Some("/project/src/main/resources/mapper/UserMapper.xml"));
+        assert_eq!(
+            host.opened_locations(),
+            [("/project/src/main/resources/mapper/UserMapper.xml".to_owned(), 2, 14)]
+        );
     }
 }
