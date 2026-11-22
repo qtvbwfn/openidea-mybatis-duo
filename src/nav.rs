@@ -19,7 +19,7 @@ use openidea_plugin::indexing::{Anchor, DocumentIndexer, Edges};
 use openidea_plugin::providers::{CompletionItem, CompletionKind, Document, LineMarker, Providers};
 use openidea_plugin::text::{offset, position};
 use openidea_plugin::{Location, Position, Project, Range, TextQuery, host};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 /// How long a namespace → XML file lookup is trusted.
@@ -793,9 +793,24 @@ fn project_of(path: &str) -> Option<Project> {
 pub struct Navigator {
     /// project root → namespace → (when it was looked up, the XML mapping it, if any).
     xml_index: BTreeMap<String, BTreeMap<String, (Instant, Option<String>)>>,
+    /// The indexer's view of the project's mappers: namespace → its XML file, and
+    /// namespace → the statement ids that file carries. Filled by `index()` as the
+    /// host feeds documents, so the code actions' display filter reads it without
+    /// touching the filesystem.
+    pub(crate) mapper_files: BTreeMap<String, String>,
+    pub(crate) mapper_statements: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl Navigator {
+    /// The indexer's view of `fqn`: `(xml path, statement ids)` when the index has
+    /// seen a mapper XML for it, `None` while the project is still mid-indexing
+    /// (the caller keeps the create/generate actions offered in that case).
+    pub(crate) fn indexed_mapper(&self, fqn: &str) -> Option<(String, BTreeSet<String>)> {
+        let path = self.mapper_files.get(fqn)?;
+        let statements = self.mapper_statements.get(fqn)?;
+        Some((path.clone(), statements.clone()))
+    }
+
     /// The XML mapping `namespace`: the cached path while it still maps it, else a
     /// search for its `namespace="…"`, so the cost doesn't grow with the project's XML files.
     pub(crate) fn xml_for(
@@ -1346,6 +1361,14 @@ impl DocumentIndexer for Navigator {
             let Some(ns) = xml.namespace.clone() else {
                 return Edges::default();
             };
+            // The code actions' display filter reads these (issue #4 follow-up):
+            // a namespace with no entry means the index has not seen a mapper for
+            // it, so the create/generate actions stay offered until it does.
+            self.mapper_files.insert(ns.name.clone(), doc.path.clone());
+            self.mapper_statements.insert(
+                ns.name.clone(),
+                xml.statements.iter().map(|s| s.name.clone()).collect(),
+            );
             let mut e = Edges::default();
             // `<mapper namespace>` → the interface declaration (the marker draws
             // the gutter arrow on that line).

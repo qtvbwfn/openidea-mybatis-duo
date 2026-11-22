@@ -388,11 +388,13 @@ impl Providers for MybatisPlus {
         self.nav.completion(doc, at, trigger)
     }
 
-    /// The three MyBatis actions stay listed on every mapper interface (and on
-    /// its methods): each one re-checks on resolve what the mapper already has
-    /// — and jumps there — and what it lacks — and creates. The edit-budget
-    /// call only parses the interface; everything heavy resolves on the
-    /// command budget in [`Self::resolve_code_action`].
+    /// The MyBatis actions appear only for what the mapper lacks: the XML exists
+    /// → no Create Mapper XML; the statement is there → no Generate Statement;
+    /// every parameter is annotated → no Add @Param. The states come from the
+    /// plugin's own navigation index (`indexed_mapper`), which the gutters keep
+    /// warm, so no filesystem access is needed on the 50 ms edit path — until
+    /// the index has seen the project, the actions stay offered and the resolve
+    /// confirms.
     fn code_actions(&mut self, doc: &Document, selection: Range) -> Vec<CodeAction> {
         if doc.language != "java" {
             return Vec::new();
@@ -400,13 +402,19 @@ impl Providers for MybatisPlus {
         let Some(iface) = parse::parse_java(&doc.text) else {
             return Vec::new();
         };
-        let mut actions = vec![CodeAction {
-            title: t("Create Mapper XML"),
-            kind: None,
-            preferred: false,
-            edits: Vec::new(),
-            data: Some("xml".into()),
-        }];
+        // The index has not seen a mapper XML for this interface: offer the whole
+        // set (mid-indexing, or genuinely none yet — the resolve confirms).
+        let indexed = self.nav.indexed_mapper(&iface.fqn);
+        let mut actions = Vec::new();
+        if indexed.is_none() {
+            actions.push(CodeAction {
+                title: t("Create Mapper XML"),
+                kind: None,
+                preferred: false,
+                edits: Vec::new(),
+                data: Some("xml".into()),
+            });
+        }
         let Some(cursor) = offset(&doc.text, selection.start) else {
             return actions;
         };
@@ -418,27 +426,34 @@ impl Providers for MybatisPlus {
             return actions;
         };
         if method.kind.is_some() && !method.default_method {
+            let statement_present = indexed
+                .as_ref()
+                .is_some_and(|(_, statements)| statements.contains(&method.name));
+            if !statement_present {
+                actions.push(CodeAction {
+                    title: t_with(
+                        "Generate XML Statement for {name}",
+                        &[("name", &method.name)],
+                    ),
+                    kind: None,
+                    preferred: false,
+                    edits: Vec::new(),
+                    data: Some(format!("statement:{}", method.name)),
+                });
+            }
+        }
+        if !generate::param_annotation_edits(&iface, Some(method)).is_empty() {
             actions.push(CodeAction {
                 title: t_with(
-                    "Generate XML Statement for {name}",
+                    "Add @Param annotations to {name}",
                     &[("name", &method.name)],
                 ),
                 kind: None,
                 preferred: false,
                 edits: Vec::new(),
-                data: Some(format!("statement:{}", method.name)),
+                data: Some(format!("param:{}", method.name)),
             });
         }
-        actions.push(CodeAction {
-            title: t_with(
-                "Add @Param annotations to {name}",
-                &[("name", &method.name)],
-            ),
-            kind: None,
-            preferred: false,
-            edits: Vec::new(),
-            data: Some(format!("param:{}", method.name)),
-        });
         actions
     }
 
@@ -739,7 +754,7 @@ public interface UserMapper {
             "the reference is consumed on resolve"
         );
 
-        // An already-annotated method resolves into no edits at all.
+        // An already-annotated method offers no @Param action at all.
         let annotated = MAPPER.replace(
             "String name, int size",
             "@Param(\"name\") String name, @Param(\"size\") int size",
@@ -752,15 +767,71 @@ public interface UserMapper {
             &doc,
             host.invocation().editor().unwrap().selections().unwrap()[0],
         );
-        let param = actions
-            .iter()
-            .find(|a| a.data.as_deref() == Some("param:findByName"))
-            .unwrap()
-            .clone();
-        let resolved = MybatisPlus::default()
-            .resolve_code_action(&doc, param)
-            .unwrap();
-        assert!(resolved.edits.is_empty(), "nothing to do: {resolved:?}");
+        assert_eq!(actions.len(), 2, "{actions:?}");
+        assert!(
+            actions
+                .iter()
+                .all(|a| a.data.as_deref() != Some("param:findByName"))
+        );
+    }
+
+    #[test]
+    fn the_actions_filter_on_the_indexed_mapper_state() {
+        let host = MockHost::install();
+        host.open_editor(
+            "/project/src/UserMapper.java",
+            "java",
+            MAPPER,
+            &[(5, 12, 5, 12)],
+        );
+        let doc = Document {
+            path: "/project/src/UserMapper.java".into(),
+            language: "java".into(),
+            version: 1,
+            text: MAPPER.into(),
+        };
+        let mut plugin = MybatisPlus::default();
+        let fqn = "com.example.mapper.UserMapper";
+
+        // The index has seen the mapper XML with the statement already: only the
+        // @Param action remains (findByName lacks the annotations).
+        plugin
+            .nav
+            .mapper_files
+            .insert(fqn.into(), "/project/src/UserMapper.xml".into());
+        plugin.nav.mapper_statements.insert(
+            fqn.into(),
+            std::collections::BTreeSet::from(["findByName".into()]),
+        );
+        let actions = plugin.code_actions(
+            &doc,
+            host.invocation().editor().unwrap().selections().unwrap()[0],
+        );
+        assert_eq!(actions.len(), 1, "{actions:?}");
+        assert_eq!(actions[0].data.as_deref(), Some("param:findByName"));
+
+        // Without the statement in the XML, the generate action is offered too
+        // (and the create stays hidden while the XML exists).
+        plugin
+            .nav
+            .mapper_statements
+            .insert(fqn.into(), std::collections::BTreeSet::new());
+        let actions = plugin.code_actions(
+            &doc,
+            host.invocation().editor().unwrap().selections().unwrap()[0],
+        );
+        assert_eq!(actions.len(), 2, "{actions:?}");
+        assert_eq!(actions[0].data.as_deref(), Some("statement:findByName"));
+        assert_eq!(actions[1].data.as_deref(), Some("param:findByName"));
+
+        // No mapper XML seen at all: the create action comes back as well.
+        plugin.nav.mapper_files.clear();
+        let actions = plugin.code_actions(
+            &doc,
+            host.invocation().editor().unwrap().selections().unwrap()[0],
+        );
+        assert_eq!(actions.len(), 3, "{actions:?}");
+        assert_eq!(actions[0].data.as_deref(), Some("xml"));
     }
 
     #[test]
