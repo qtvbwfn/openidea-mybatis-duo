@@ -455,13 +455,15 @@ impl Providers for MybatisPlus {
             // exists, else create it at the Spring convention path. A file that is
             // already there but maps something else is never overwritten.
             "xml" => {
-                if let Some((path, xml)) = self.nav.xml_for(&project, &iface.fqn) {
-                    let line = xml
-                        .namespace
-                        .as_ref()
-                        .map(|n| n.range.start.line)
-                        .unwrap_or(0);
-                    host::open_location(&path, line, 0)?;
+                if let Some((path, _)) = self.nav.xml_for(&project, &iface.fqn) {
+                    host::notify(
+                        NotificationLevel::Info,
+                        "MyBatis Duo",
+                        &t_with(
+                            "Mapper XML already exists: {path} — the gutter arrow jumps to it",
+                            &[("path", &path)],
+                        ),
+                    );
                     return Ok(spent(&action));
                 }
                 let rel = format!(
@@ -491,7 +493,6 @@ impl Providers for MybatisPlus {
                     "MyBatis Duo",
                     &t_with("Created {rel}", &[("rel", &rel)]),
                 );
-                host::open_location(&target, 0, 0)?;
                 Ok(spent(&action))
             }
             // The statement: jump to it when the XML has it; append it through the
@@ -546,16 +547,30 @@ impl Providers for MybatisPlus {
                             &[("rel", &rel), ("method", &method.name)],
                         ),
                     );
-                    host::open_location(&target, 4, 0)?;
                     return Ok(spent(&action));
                 };
                 if let Some(s) = xml.statements.iter().find(|s| &s.name == method_name) {
-                    host::open_location(&xml_path, s.range.start.line, s.range.start.character)?;
+                    host::notify(
+                        NotificationLevel::Info,
+                        "MyBatis Duo",
+                        &t_with(
+                            "The statement already exists on line {line} — the gutter arrow jumps to it",
+                            &[("line", &(s.range.start.line + 1).to_string())],
+                        ),
+                    );
                     return Ok(spent(&action));
                 }
                 let text = project.read_file(&xml_path)?;
                 let statement = generate::statement_xml(method, &iface, inferred);
                 let (from, to, insert) = generate::append_statement_edit(&text, &statement);
+                host::notify(
+                    NotificationLevel::Info,
+                    "MyBatis Duo",
+                    &t_with(
+                        "Generated <{method}> in {path}",
+                        &[("method", &method.name), ("path", &xml_path)],
+                    ),
+                );
                 Ok(CodeAction {
                     title: action.title.clone(),
                     kind: action.kind.clone(),

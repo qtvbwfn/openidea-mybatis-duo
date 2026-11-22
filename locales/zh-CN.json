@@ -21,5 +21,8 @@
   "no file is open in the editor": "编辑器中没有打开的文件",
   "no project is open": "没有打开的项目",
   "Generate XML Statement for {name}": "生成 {name} 的 XML Statement",
-  "Open the mapper's project first": "请先打开 Mapper 所属的项目"
+  "Open the mapper's project first": "请先打开 Mapper 所属的项目",
+  "Mapper XML already exists: {path} — the gutter arrow jumps to it": "Mapper XML 已存在：{path}——装订区箭头可跳转",
+  "The statement already exists on line {line} — the gutter arrow jumps to it": "statement 已存在（第 {line} 行）——装订区箭头可跳转",
+  "Generated <{method}> in {path}": "已在 {path} 生成 <{method}>"
 }
