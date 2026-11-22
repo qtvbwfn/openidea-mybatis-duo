@@ -10,10 +10,28 @@ const IND: &str = "    "; // statements indent 4 spaces (MyBatisX convention)
 pub type Edit = (usize, usize, String);
 
 const COLLECTION_PREFIXES: &[&str] = &[
-    "java.util.List", "List", "java.util.Collection", "Collection", "java.util.Set", "Set", "java.util.Iterable",
-    "Iterable", "java.util.ArrayList", "ArrayList", "java.util.LinkedList", "LinkedList", "java.util.HashSet",
-    "HashSet", "java.util.LinkedHashSet", "LinkedHashSet", "java.util.TreeSet", "TreeSet", "java.util.Queue",
-    "Queue", "java.util.Deque", "Deque",
+    "java.util.List",
+    "List",
+    "java.util.Collection",
+    "Collection",
+    "java.util.Set",
+    "Set",
+    "java.util.Iterable",
+    "Iterable",
+    "java.util.ArrayList",
+    "ArrayList",
+    "java.util.LinkedList",
+    "LinkedList",
+    "java.util.HashSet",
+    "HashSet",
+    "java.util.LinkedHashSet",
+    "LinkedHashSet",
+    "java.util.TreeSet",
+    "TreeSet",
+    "java.util.Queue",
+    "Queue",
+    "java.util.Deque",
+    "Deque",
 ];
 
 /// `#{…}` references for the TODO comment: multi-params, `#{list}` for a single collection.
@@ -22,11 +40,24 @@ fn refs_hint(params: &[JavaParam]) -> String {
         0 => String::new(),
         1 => {
             let p = &params[0];
-            let collection =
-                COLLECTION_PREFIXES.iter().any(|c| p.ty == *c || p.ty.starts_with(&format!("{c}<"))) || p.ty.ends_with("[]");
-            if collection { "; params: #{list}".to_string() } else { String::new() }
+            let collection = COLLECTION_PREFIXES
+                .iter()
+                .any(|c| p.ty == *c || p.ty.starts_with(&format!("{c}<")))
+                || p.ty.ends_with("[]");
+            if collection {
+                "; params: #{list}".to_string()
+            } else {
+                String::new()
+            }
         }
-        _ => format!("; params: {}", params.iter().map(|p| format!("#{{{}}}", p.binding)).collect::<Vec<_>>().join(", ")),
+        _ => format!(
+            "; params: {}",
+            params
+                .iter()
+                .map(|p| format!("#{{{}}}", p.binding))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 
@@ -64,13 +95,34 @@ fn parameter_type_of(p: &JavaParam, iface: &MapperInterface) -> String {
         None => (base, false),
     };
     let resolved = resolve_type(simple, iface);
-    if array { format!("{resolved}[]") } else { resolved }
+    if array {
+        format!("{resolved}[]")
+    } else {
+        resolved
+    }
 }
 
-const DOTLESS_SCALARS: &[&str] = &["boolean", "int", "long", "short", "byte"];
+const DOTLESS_SCALARS: &[&str] = &[
+    "boolean",
+    "Boolean",
+    "int",
+    "Integer",
+    "long",
+    "Long",
+    "short",
+    "Short",
+    "byte",
+    "Byte",
+    "float",
+    "Float",
+    "double",
+    "Double",
+    "String",
+    "Date",
+    "BigDecimal",
+];
 
-pub fn statement_xml(m: &JavaMethod, iface: &MapperInterface) -> String {
-    let kind = m.kind.unwrap_or(Kind::Select);
+pub fn statement_xml(m: &JavaMethod, iface: &MapperInterface, kind: Kind) -> String {
     let mut attrs: Vec<String> = Vec::new();
     let rt = result_type_of(m, iface);
     if let Some(rt) = &rt {
@@ -82,9 +134,20 @@ pub fn statement_xml(m: &JavaMethod, iface: &MapperInterface) -> String {
         attrs.push(format!("parameterType=\"{t}\""));
         pt = Some(t);
     }
-    let attr_text = if attrs.is_empty() { String::new() } else { format!(" {}", attrs.join(" ")) };
-    let body = format!("<!-- TODO: write {}{} -->", kind.as_str().to_uppercase(), refs_hint(&m.params));
-    let mut lines = vec![format!("<{} id=\"{}\"{}>", kind.as_str(), m.name, attr_text), format!("{IND}{body}")];
+    let attr_text = if attrs.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", attrs.join(" "))
+    };
+    let body = format!(
+        "<!-- TODO: write {}{} -->",
+        kind.as_str().to_uppercase(),
+        refs_hint(&m.params)
+    );
+    let mut lines = vec![
+        format!("<{} id=\"{}\"{}>", kind.as_str(), m.name, attr_text),
+        format!("{IND}{body}"),
+    ];
     if kind == Kind::Insert {
         lines.push(format!(
             "{IND}<!-- TODO: add useGeneratedKeys=\"true\" keyProperty=\"id\" to return generated keys -->"
@@ -97,10 +160,16 @@ pub fn statement_xml(m: &JavaMethod, iface: &MapperInterface) -> String {
         .flatten()
         .any(|t| !t.contains('.') && !DOTLESS_SCALARS.contains(&t.as_str()));
     if unresolved {
-        lines.push(format!("{IND}<!-- TODO: use a fully qualified type (unresolved import) -->"));
+        lines.push(format!(
+            "{IND}<!-- TODO: use a fully qualified type (unresolved import) -->"
+        ));
     }
     lines.push(format!("</{}>", kind.as_str()));
-    lines.iter().map(|l| format!("{IND}{l}")).collect::<Vec<_>>().join("\n")
+    lines
+        .iter()
+        .map(|l| format!("{IND}{l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn mapper_xml_content(iface: &MapperInterface) -> String {
@@ -108,7 +177,7 @@ pub fn mapper_xml_content(iface: &MapperInterface) -> String {
         .methods
         .iter()
         .filter(|m| m.kind.is_some() && !m.default_method)
-        .map(|m| statement_xml(m, iface))
+        .map(|m| statement_xml(m, iface, m.kind.unwrap_or(Kind::Select)))
         .collect();
     let body = stmts.join("\n\n");
     let header = concat!(
@@ -125,22 +194,34 @@ pub fn mapper_xml_content(iface: &MapperInterface) -> String {
 
 /// The whole mapper XML carrying just one statement: what a fresh mapper for
 /// the method starts with (the interface's other methods generate on demand).
-pub fn mapper_xml_with_statement(m: &JavaMethod, iface: &MapperInterface) -> String {
+pub fn mapper_xml_with_statement(m: &JavaMethod, iface: &MapperInterface, kind: Kind) -> String {
     let header = concat!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n",
         "<!DOCTYPE mapper PUBLIC \"-//mybatis.org//DTD Mapper 3.0//EN\" \"http://mybatis.org/dtd/mybatis-3-mapper.dtd\"\n"
     );
-    format!("{header}<mapper namespace=\"{}\">\n\n{}\n</mapper>\n", iface.fqn, statement_xml(m, iface))
+    format!(
+        "{header}<mapper namespace=\"{}\">\n\n{}\n</mapper>\n",
+        iface.fqn,
+        statement_xml(m, iface, kind)
+    )
 }
 
 /// Where a generated statement goes: before `</mapper>`, else the end of the file.
 pub fn append_statement_edit(xml_text: &str, stmt_xml: &str) -> Edit {
     if let Some(close) = xml_text.rfind("</mapper>") {
-        let prefix = if close > 0 && xml_text.as_bytes()[close - 1] == b'\n' { "" } else { "\n" };
+        let prefix = if close > 0 && xml_text.as_bytes()[close - 1] == b'\n' {
+            ""
+        } else {
+            "\n"
+        };
         (close, close, format!("{stmt_xml}\n\n{prefix}"))
     } else {
         let prefix = if xml_text.ends_with('\n') { "" } else { "\n" };
-        (xml_text.len(), xml_text.len(), format!("{prefix}{stmt_xml}\n"))
+        (
+            xml_text.len(),
+            xml_text.len(),
+            format!("{prefix}{stmt_xml}\n"),
+        )
     }
 }
 
@@ -180,12 +261,22 @@ pub fn import_edit(text: &str) -> Option<Edit> {
     for line in text.split_inclusive('\n') {
         let t = line.trim_start();
         if let Some(rest) = t.strip_prefix("import ")
-            && let Some(name) = rest.trim_end().trim_end_matches(';').trim().rsplit('.').next()
+            && let Some(name) = rest
+                .trim_end()
+                .trim_end_matches(';')
+                .trim()
+                .rsplit('.')
+                .next()
         {
             if name == "Param" {
                 has_param = true;
             }
-            if rest.trim_end().trim_end_matches(';').trim().chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+            if rest
+                .trim_end()
+                .trim_end_matches(';')
+                .trim()
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
             {
                 last_import_end = Some(pos + line.trim_end_matches('\n').len());
             }
@@ -196,8 +287,16 @@ pub fn import_edit(text: &str) -> Option<Edit> {
         return None;
     }
     if let Some(last) = last_import_end {
-        let eol = if text[last..].starts_with("\r\n") { "\r\n" } else { "\n" };
-        return Some((last, last, format!("{eol}import org.apache.ibatis.annotations.Param;")));
+        let eol = if text[last..].starts_with("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        };
+        return Some((
+            last,
+            last,
+            format!("{eol}import org.apache.ibatis.annotations.Param;"),
+        ));
     }
     // After the package declaration, else at the top.
     for line in text.split_inclusive('\n') {
@@ -205,11 +304,22 @@ pub fn import_edit(text: &str) -> Option<Edit> {
         if t.starts_with("package ")
             && let Some(end) = t.find(';')
         {
-            let at = (line.as_ptr() as usize - text.as_ptr() as usize) + (line.len() - line.trim_start().len()) + end + 1;
-            return Some((at, at, "\nimport org.apache.ibatis.annotations.Param;".to_string()));
+            let at = (line.as_ptr() as usize - text.as_ptr() as usize)
+                + (line.len() - line.trim_start().len())
+                + end
+                + 1;
+            return Some((
+                at,
+                at,
+                "\nimport org.apache.ibatis.annotations.Param;".to_string(),
+            ));
         }
     }
-    Some((0, 0, "import org.apache.ibatis.annotations.Param;\n\n".to_string()))
+    Some((
+        0,
+        0,
+        "import org.apache.ibatis.annotations.Param;\n\n".to_string(),
+    ))
 }
 
 /// Applies non-overlapping edits (descending order).
@@ -246,10 +356,13 @@ public interface UserMapper {
     fn statement_xml_carries_result_and_parameter_types() {
         let iface = parse_java(MAPPER).unwrap();
         let m = &iface.methods[0]; // List<User> findByStatus(String, int)
-        let xml = statement_xml(m, &iface);
-        assert!(xml.contains("    <select id=\"findByStatus\" resultType=\"com.example.User\">"), "{xml}");
+        let xml = statement_xml(m, &iface, m.kind.unwrap_or(Kind::Select));
+        assert!(
+            xml.contains("    <select id=\"findByStatus\" resultType=\"com.example.User\">"),
+            "{xml}"
+        );
         assert!(xml.contains("params: #{status}, #{size}"), "{xml}");
-        let save = statement_xml(&iface.methods[1], &iface); // void saveUser(String, Integer)
+        let save = statement_xml(&iface.methods[1], &iface, Kind::Insert); // void saveUser(String, Integer)
         assert!(save.contains("<insert id=\"saveUser\">"), "{save}");
         assert!(save.contains("useGeneratedKeys"), "{save}");
     }
@@ -270,7 +383,10 @@ public interface UserMapper {
     fn import_edit_adds_the_annotation_import() {
         let edit = import_edit("package a.b;\npublic interface X {}").expect("edit");
         let out = apply_edits("package a.b;\npublic interface X {}", &[edit]);
-        assert!(out.contains("package a.b;\nimport org.apache.ibatis.annotations.Param;"), "{out}");
+        assert!(
+            out.contains("package a.b;\nimport org.apache.ibatis.annotations.Param;"),
+            "{out}"
+        );
         assert!(import_edit("import org.apache.ibatis.annotations.Param;\n").is_none());
     }
 
@@ -279,6 +395,9 @@ public interface UserMapper {
         let xml = "<mapper namespace=\"a\">\n\n</mapper>";
         let (from, to, insert) = append_statement_edit(xml, "    <select id=\"x\"></select>");
         let out = apply_edits(xml, &[(from, to, insert)]);
-        assert!(out.ends_with("<select id=\"x\"></select>\n\n</mapper>"), "{out}");
+        assert!(
+            out.ends_with("<select id=\"x\"></select>\n\n</mapper>"),
+            "{out}"
+        );
     }
 }

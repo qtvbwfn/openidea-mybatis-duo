@@ -217,12 +217,16 @@ fn collect_imports(masked: &[u8]) -> JavaImports {
     let mut wildcards = Vec::new();
     for line in masked.split(|b| *b == b'\n') {
         let t = trim_start(line);
-        let Some(rest) = t.strip_prefix(b"import ") else { continue };
+        let Some(rest) = t.strip_prefix(b"import ") else {
+            continue;
+        };
         let rest = trim_start(rest);
         if rest.starts_with(b"static ") {
             continue;
         }
-        let Some(end) = rest.iter().position(|b| *b == b';') else { continue };
+        let Some(end) = rest.iter().position(|b| *b == b';') else {
+            continue;
+        };
         let fqn = String::from_utf8_lossy(&rest[..end]).trim().to_string();
         if let Some(pkg) = fqn.strip_suffix(".*") {
             wildcards.push(pkg.to_string());
@@ -287,8 +291,20 @@ fn strip_annotations(s: &str) -> String {
 }
 
 const MODIFIERS: &[&str] = &[
-    "public", "protected", "private", "static", "final", "abstract", "default", "native", "synchronized",
-    "strictfp", "transient", "volatile", "new", "throws",
+    "public",
+    "protected",
+    "private",
+    "static",
+    "final",
+    "abstract",
+    "default",
+    "native",
+    "synchronized",
+    "strictfp",
+    "transient",
+    "volatile",
+    "new",
+    "throws",
 ];
 
 /// The return type between the annotation-stripped prefix and the method name.
@@ -415,8 +431,12 @@ fn find_method_spans(masked: &[u8], decl: &TypeDecl, body_to: usize) -> Vec<Meth
         let segment = String::from_utf8_lossy(&masked[boundary + 1..name_at]).to_string();
         let cleaned = strip_annotations(&segment);
         let cleaned_trim = cleaned.trim();
-        let has_word = cleaned_trim.chars().any(|c| c.is_alphanumeric() || c == '$');
-        let bad = cleaned_trim.chars().any(|c| !(c.is_alphanumeric() || " _$<>[].?,@".contains(c)));
+        let has_word = cleaned_trim
+            .chars()
+            .any(|c| c.is_alphanumeric() || c == '$');
+        let bad = cleaned_trim
+            .chars()
+            .any(|c| !(c.is_alphanumeric() || " _$<>[].?,@".contains(c)));
         if !has_word || bad || cleaned_trim.ends_with('.') {
             i = name_end;
             continue;
@@ -452,7 +472,14 @@ fn find_method_spans(masked: &[u8], decl: &TypeDecl, body_to: usize) -> Vec<Meth
             i = name_end;
             continue;
         };
-        out.push(MethodSpan { name, name_at, paren_open, paren_close, sig_start: boundary + 1, sig_end });
+        out.push(MethodSpan {
+            name,
+            name_at,
+            paren_open,
+            paren_close,
+            sig_start: boundary + 1,
+            sig_end,
+        });
         i = sig_end;
     }
     out
@@ -517,7 +544,10 @@ fn param_value(_text: &str, seg_start: usize, seg: &str) -> Option<(String, (usi
                     if let Some(end) = end {
                         let inner = &seg[j + 1..end];
                         let inner_trim = inner.trim();
-                        if inner_trim.starts_with('"') && inner_trim.ends_with('"') && inner_trim.len() >= 2 {
+                        if inner_trim.starts_with('"')
+                            && inner_trim.ends_with('"')
+                            && inner_trim.len() >= 2
+                        {
                             let value = inner_trim[1..inner_trim.len() - 1].replace("\\\"", "\"");
                             return Some((value, (seg_start + i, seg_start + end + 1)));
                         }
@@ -559,7 +589,10 @@ fn parse_param(text: &str, from: usize, to: usize) -> Option<JavaParam> {
     let mut array_suffix = String::new();
     let mut seg = seg.trim_end().to_string();
     if seg.ends_with(']') {
-        let cut = seg.rfind(|c: char| c != ' ' && c != '[' && c != ']').map(|i| i + 1).unwrap_or(0);
+        let cut = seg
+            .rfind(|c: char| c != ' ' && c != '[' && c != ']')
+            .map(|i| i + 1)
+            .unwrap_or(0);
         let suffix = &seg[cut..];
         if suffix.chars().all(|c| c == '[' || c == ']' || c == ' ') {
             array_suffix = suffix.chars().filter(|c| *c == '[' || *c == ']').collect();
@@ -585,7 +618,11 @@ fn parse_param(text: &str, from: usize, to: usize) -> Option<JavaParam> {
     ty = format!("{ty}{array_suffix}");
     Some(JavaParam {
         ty,
-        binding: if binding.is_empty() { name.clone() } else { binding },
+        binding: if binding.is_empty() {
+            name.clone()
+        } else {
+            binding
+        },
         name,
         has_param,
         empty_param_at,
@@ -600,43 +637,91 @@ fn has_prefix(name: &str, prefixes: &[&str]) -> bool {
     prefixes.iter().any(|p| name.starts_with(p))
 }
 
-/// Statement kind by the return type, refined by the name prefix where the
-/// type alone is ambiguous (`void` and the int/long/boolean counts).
-pub fn infer_kind(name: &str, return_type: &str, sql_annotation: bool) -> Option<Kind> {
+const WRITE_INSERT: &[&str] = &["insert", "save", "add", "create", "persist"];
+const WRITE_DELETE: &[&str] = &["delete", "remove", "drop", "clear", "del"];
+const WRITE_UPDATE: &[&str] = &["update", "modify", "edit", "change", "merge", "refresh"];
+const READ_PREFIX: &[&str] = &[
+    "select", "find", "get", "query", "list", "search", "load", "count", "exists", "is", "has",
+];
+/// Scalar results (and their boxed forms): MyBatis aliases them outright.
+const SCALARS: &[&str] = &[
+    "void",
+    "boolean",
+    "Boolean",
+    "int",
+    "Integer",
+    "long",
+    "Long",
+    "short",
+    "Short",
+    "byte",
+    "Byte",
+    "float",
+    "Float",
+    "double",
+    "Double",
+    "String",
+    "Date",
+    "BigDecimal",
+];
+
+/// The statement kind the method's name names outright: `insert`/`save`/`add`/…
+/// for writes, the read prefixes for queries over scalars, and a plain `select`
+/// for anything returning an object or a collection. `None` when the name says
+/// nothing — the caller asks the user which kind to generate.
+pub fn infer_kind_explicit(name: &str, return_type: &str, sql_annotation: bool) -> Option<Kind> {
     if sql_annotation {
         return None;
     }
     let lower = name.to_lowercase();
     let simple = return_type.split('<').next().unwrap_or(return_type).trim();
-    let count_scalars = [
-        "boolean", "Boolean", "int", "Integer", "long", "Long", "short", "Short", "byte", "Byte",
-    ];
-    if simple == "void" {
-        if has_prefix(&lower, &["insert", "save", "add", "create", "persist"]) {
-            return Some(Kind::Insert);
-        }
-        if has_prefix(&lower, &["delete", "remove", "drop", "clear"]) {
-            return Some(Kind::Delete);
-        }
+    // A write prefix wins over everything: `User updateX(…)` still updates.
+    if has_prefix(&lower, WRITE_INSERT) {
+        return Some(Kind::Insert);
+    }
+    if has_prefix(&lower, WRITE_DELETE) {
+        return Some(Kind::Delete);
+    }
+    if has_prefix(&lower, WRITE_UPDATE) {
         return Some(Kind::Update);
     }
-    if count_scalars.contains(&simple) {
-        if has_prefix(&lower, &["delete", "remove", "drop", "clear"]) {
-            return Some(Kind::Delete);
-        }
-        if has_prefix(&lower, &["insert", "save", "add", "create", "persist"]) {
-            return Some(Kind::Insert);
-        }
-        if has_prefix(&lower, &["update", "modify", "edit", "change", "merge", "refresh"]) {
-            return Some(Kind::Update);
-        }
-        if has_prefix(&lower, &["select", "find", "get", "query", "list", "search", "load", "count", "exists", "is", "has"])
-        {
-            return Some(Kind::Select);
-        }
-        return Some(Kind::Update);
+    // A read prefix names a query, whatever the return type.
+    if has_prefix(&lower, READ_PREFIX) {
+        return Some(Kind::Select);
+    }
+    // No telling prefix: a scalar or void result may be any of the three writes,
+    // so the caller asks the user; an object or collection result is a select.
+    if simple == "void" || SCALARS.iter().any(|s| *s == simple) {
+        return None;
     }
     Some(Kind::Select)
+}
+
+/// Statement kind by the return type, refined by the name prefix where the
+/// type alone is ambiguous (`void` and the scalar counts) — the historical
+/// defaulting that [`JavaMethod::kind`] carries; new code asks the user via
+/// [`infer_kind_explicit`] instead of defaulting.
+pub fn infer_kind(name: &str, return_type: &str, sql_annotation: bool) -> Option<Kind> {
+    if sql_annotation {
+        return None;
+    }
+    match infer_kind_explicit(name, return_type, false) {
+        Some(kind) => Some(kind),
+        None => {
+            let lower = name.to_lowercase();
+            let simple = return_type.split('<').next().unwrap_or(return_type).trim();
+            if simple == "void" {
+                if has_prefix(&lower, READ_PREFIX) {
+                    return Some(Kind::Select);
+                }
+                return Some(Kind::Update);
+            }
+            if has_prefix(&lower, READ_PREFIX) {
+                return Some(Kind::Select);
+            }
+            Some(Kind::Update)
+        }
+    }
 }
 
 /// Element type for `resultType` (`User` for `List<User>`), `None` when unknown.
@@ -648,7 +733,11 @@ pub fn result_element(return_type: &str) -> Option<String> {
                 && let Some(inner) = rest.trim_end().strip_suffix('>')
             {
                 let inner = inner.trim();
-                if !inner.is_empty() && inner.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$' || c == '.') {
+                if !inner.is_empty()
+                    && inner
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '$' || c == '.')
+                {
                     return Some(inner.to_string());
                 }
             }
@@ -656,8 +745,17 @@ pub fn result_element(return_type: &str) -> Option<String> {
         None
     };
     let collections = [
-        "List", "Collection", "Set", "Iterable", "ArrayList", "LinkedList", "HashSet", "LinkedHashSet", "TreeSet",
-        "Queue", "Deque",
+        "List",
+        "Collection",
+        "Set",
+        "Iterable",
+        "ArrayList",
+        "LinkedList",
+        "HashSet",
+        "LinkedHashSet",
+        "TreeSet",
+        "Queue",
+        "Deque",
     ];
     let mut cands: Vec<String> = Vec::new();
     for c in collections {
@@ -672,7 +770,11 @@ pub fn result_element(return_type: &str) -> Option<String> {
     }
     if let Some(base) = rt.strip_suffix("[]") {
         let base = base.trim();
-        if !base.is_empty() && base.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$' || c == '.') {
+        if !base.is_empty()
+            && base
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '$' || c == '.')
+        {
             return Some(base.to_string());
         }
     }
@@ -680,8 +782,8 @@ pub fn result_element(return_type: &str) -> Option<String> {
         return None;
     }
     let void_or_count = [
-        "void", "boolean", "Boolean", "int", "Integer", "long", "Long", "short", "Short", "byte", "Byte", "float",
-        "Float", "double", "Double",
+        "void", "boolean", "Boolean", "int", "Integer", "long", "Long", "short", "Short", "byte",
+        "Byte", "float", "Float", "double", "Double",
     ];
     if void_or_count.contains(&rt) {
         return None;
@@ -690,8 +792,23 @@ pub fn result_element(return_type: &str) -> Option<String> {
 }
 
 const JAVA_LANG: &[&str] = &[
-    "String", "Object", "Boolean", "Byte", "Short", "Integer", "Long", "Float", "Double", "Character", "Void",
-    "Number", "Math", "Enum", "Class", "Iterable", "Comparable",
+    "String",
+    "Object",
+    "Boolean",
+    "Byte",
+    "Short",
+    "Integer",
+    "Long",
+    "Float",
+    "Double",
+    "Character",
+    "Void",
+    "Number",
+    "Math",
+    "Enum",
+    "Class",
+    "Iterable",
+    "Comparable",
 ];
 
 /// Resolves a simple name against imports, `java.lang`, then the same package;
@@ -728,10 +845,18 @@ pub fn parse_java(text: &str) -> Option<MapperInterface> {
         .and_then(|at| {
             let start = at + 8;
             let end = masked[start..].iter().position(|b| *b == b';')? + start;
-            Some(String::from_utf8_lossy(&masked[start..end]).trim().to_string())
+            Some(
+                String::from_utf8_lossy(&masked[start..end])
+                    .trim()
+                    .to_string(),
+            )
         })
         .unwrap_or_default();
-    let fqn = if pkg.is_empty() { decl.name.clone() } else { format!("{}.{}", pkg, decl.name) };
+    let fqn = if pkg.is_empty() {
+        decl.name.clone()
+    } else {
+        format!("{}.{}", pkg, decl.name)
+    };
     // Body close: brace depth back to zero.
     let mut depth = 0i32;
     let mut body_to = masked.len();
@@ -754,14 +879,18 @@ pub fn parse_java(text: &str) -> Option<MapperInterface> {
         let sql_annotation = sql_annotation_at(&masked_sig).is_some();
         let prefix = String::from_utf8_lossy(&masked[span.sig_start..span.name_at]).to_string();
         let return_type = return_type_of(&prefix);
-        let default_method = masked_sig.split_whitespace().any(|w| w == "default" || w == "static");
+        let default_method = masked_sig
+            .split_whitespace()
+            .any(|w| w == "default" || w == "static");
         let mut params = Vec::new();
         for (from, to) in split_params(&masked, span.paren_open + 1, span.paren_close) {
             if let Some(p) = parse_param(text, from, to) {
                 params.push(p);
             }
         }
-        let prev_end = methods.last().map_or(decl.body_from, |m: &JavaMethod| m.span.1);
+        let prev_end = methods
+            .last()
+            .map_or(decl.body_from, |m: &JavaMethod| m.span.1);
         methods.push(JavaMethod {
             name: span.name.clone(),
             kind: infer_kind(&span.name, &return_type, sql_annotation),
@@ -773,7 +902,13 @@ pub fn parse_java(text: &str) -> Option<MapperInterface> {
             extent: (prev_end, span.sig_end),
         });
     }
-    Some(MapperInterface { name: decl.name, pkg, fqn, methods, imports: collect_imports(&masked) })
+    Some(MapperInterface {
+        name: decl.name,
+        pkg,
+        fqn,
+        methods,
+        imports: collect_imports(&masked),
+    })
 }
 
 /// The SQL annotation name (`Select`, …) on a signature, if any.
@@ -823,7 +958,10 @@ pub fn parse_xml(text: &str) -> MapperXml {
             from = at;
         }
     }
-    MapperXml { namespace, statements }
+    MapperXml {
+        namespace,
+        statements,
+    }
 }
 
 fn id_attribute(text: &str, from: usize) -> Option<String> {
@@ -844,6 +982,72 @@ fn id_attribute(text: &str, from: usize) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn kinds_come_from_prefixes_and_ambiguous_names_ask() {
+        // Write prefixes win over the return type (a `User updateX(…)` still updates).
+        let writes = [
+            ("insertUser", Kind::Insert),
+            ("addUser", Kind::Insert),
+            ("saveUser", Kind::Insert),
+            ("createUser", Kind::Insert),
+            ("persistUser", Kind::Insert),
+            ("deleteUser", Kind::Delete),
+            ("removeUser", Kind::Delete),
+            ("delUser", Kind::Delete),
+            ("dropUser", Kind::Delete),
+            ("updateUser", Kind::Update),
+            ("editUser", Kind::Update),
+            ("modifyUser", Kind::Update),
+        ];
+        for (name, kind) in writes {
+            assert_eq!(
+                infer_kind_explicit(name, "int", false),
+                Some(kind),
+                "{name}"
+            );
+            assert_eq!(
+                infer_kind_explicit(name, "com.acme.User", false),
+                Some(kind),
+                "{name}"
+            );
+        }
+
+        // Read prefixes name a query for scalars and objects alike.
+        for name in [
+            "findUser",
+            "getUser",
+            "selectUser",
+            "queryUser",
+            "listUsers",
+            "countUsers",
+        ] {
+            assert_eq!(
+                infer_kind_explicit(name, "int", false),
+                Some(Kind::Select),
+                "{name}"
+            );
+        }
+
+        // An object or collection result is a select whatever the name says.
+        assert_eq!(
+            infer_kind_explicit("handle", "com.acme.User", false),
+            Some(Kind::Select)
+        );
+        assert_eq!(
+            infer_kind_explicit("handle", "List<User>", false),
+            Some(Kind::Select)
+        );
+
+        // A scalar or void result without a telling prefix is ambiguous: the
+        // caller asks the user (Insert / Update / Delete / Select).
+        for rt in ["void", "int", "long", "boolean", "String"] {
+            assert_eq!(infer_kind_explicit("handle", rt, false), None, "{rt}");
+        }
+
+        // Annotation SQL never takes an XML statement.
+        assert_eq!(infer_kind_explicit("findUser", "com.acme.User", true), None);
+    }
     use super::*;
 
     const MAPPER: &str = r#"
@@ -873,14 +1077,33 @@ public interface UserMapper {
         let iface = parse_java(MAPPER).unwrap();
         assert_eq!(iface.fqn, "com.example.mapper.UserMapper");
         let names: Vec<&str> = iface.methods.iter().map(|m| m.name.as_str()).collect();
-        assert_eq!(names, ["getById", "findByStatus", "deleteById", "saveUser", "ping", "helper"]);
+        assert_eq!(
+            names,
+            [
+                "getById",
+                "findByStatus",
+                "deleteById",
+                "saveUser",
+                "ping",
+                "helper"
+            ]
+        );
         assert_eq!(iface.methods[0].kind, Some(Kind::Select));
         assert_eq!(iface.methods[2].kind, Some(Kind::Delete));
         assert_eq!(iface.methods[3].kind, Some(Kind::Insert));
-        assert_eq!(iface.methods[4].kind, None, "annotation SQL takes no XML statement");
-        assert!(iface.methods[5].default_method, "default methods take no statement (filtered at generation)");
+        assert_eq!(
+            iface.methods[4].kind, None,
+            "annotation SQL takes no XML statement"
+        );
+        assert!(
+            iface.methods[5].default_method,
+            "default methods take no statement (filtered at generation)"
+        );
         let p = &iface.methods[0].params[0];
-        assert_eq!((p.name.as_str(), p.binding.as_str(), p.has_param), ("id", "id", true));
+        assert_eq!(
+            (p.name.as_str(), p.binding.as_str(), p.has_param),
+            ("id", "id", true)
+        );
         let p = &iface.methods[1].params[1];
         assert!(!p.has_param);
         assert!(p.empty_param_at.is_some(), "empty @Param() is a fill point");
@@ -903,7 +1126,10 @@ public interface UserMapper {
     <insert id="saveUser">insert</insert>
 </mapper>"#;
         let parsed = parse_xml(xml);
-        assert_eq!(parsed.namespace.as_deref(), Some("com.example.mapper.UserMapper"));
+        assert_eq!(
+            parsed.namespace.as_deref(),
+            Some("com.example.mapper.UserMapper")
+        );
         assert_eq!(parsed.statements, ["getById", "saveUser"]);
     }
 }

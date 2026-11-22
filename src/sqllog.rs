@@ -15,8 +15,23 @@
 
 /// Types whose logged value is already a SQL literal.
 const NUMERIC_TYPES: &[&str] = &[
-    "Long", "Integer", "Short", "Byte", "Double", "Float", "BigDecimal", "BigInteger", "Number",
-    "AtomicInteger", "AtomicLong", "long", "int", "short", "byte", "double", "float",
+    "Long",
+    "Integer",
+    "Short",
+    "Byte",
+    "Double",
+    "Float",
+    "BigDecimal",
+    "BigInteger",
+    "Number",
+    "AtomicInteger",
+    "AtomicLong",
+    "long",
+    "int",
+    "short",
+    "byte",
+    "double",
+    "float",
 ];
 /// Types whose logged value is already a SQL boolean literal.
 const BOOLEAN_TYPES: &[&str] = &["Boolean", "boolean", "AtomicBoolean"];
@@ -54,7 +69,10 @@ fn parse_params(s: &str) -> Vec<ParsedParam> {
     let mut bare: Vec<String> = Vec::new();
     let flush = |out: &mut Vec<ParsedParam>, bare: &mut Vec<String>| {
         if !bare.is_empty() {
-            out.push(ParsedParam { value: bare.join(", "), ty: None });
+            out.push(ParsedParam {
+                value: bare.join(", "),
+                ty: None,
+            });
             bare.clear();
         }
     };
@@ -72,10 +90,16 @@ fn parse_params(s: &str) -> Vec<ParsedParam> {
             if !value.is_empty() {
                 joined.push(value.to_string());
             }
-            out.push(ParsedParam { value: joined.join(", "), ty: Some(ty.to_string()) });
+            out.push(ParsedParam {
+                value: joined.join(", "),
+                ty: Some(ty.to_string()),
+            });
         } else if segment == "null" {
             flush(&mut out, &mut bare);
-            out.push(ParsedParam { value: "null".to_string(), ty: None });
+            out.push(ParsedParam {
+                value: "null".to_string(),
+                ty: None,
+            });
         } else {
             bare.push(segment.to_string());
         }
@@ -89,7 +113,9 @@ fn is_number(v: &str) -> bool {
     let mut parts = body.split('.');
     let int = parts.next().unwrap_or("");
     let frac = parts.next();
-    !int.is_empty() && int.chars().all(|c| c.is_ascii_digit()) && parts.next().is_none()
+    !int.is_empty()
+        && int.chars().all(|c| c.is_ascii_digit())
+        && parts.next().is_none()
         && frac.is_none_or(|f| !f.is_empty() && f.chars().all(|c| c.is_ascii_digit()))
 }
 
@@ -115,10 +141,18 @@ fn format_value(p: &ParsedParam) -> String {
     if NUMERIC_TYPES.contains(&ty) {
         // Numbers print raw; a value that isn't a number is quoted rather than
         // emitted as broken SQL.
-        return if is_number(&p.value) { p.value.clone() } else { quote(&p.value) };
+        return if is_number(&p.value) {
+            p.value.clone()
+        } else {
+            quote(&p.value)
+        };
     }
     if BOOLEAN_TYPES.contains(&ty) {
-        return if p.value == "true" || p.value == "false" { p.value.clone() } else { quote(&p.value) };
+        return if p.value == "true" || p.value == "false" {
+            p.value.clone()
+        } else {
+            quote(&p.value)
+        };
     }
     if TEMPORAL_TYPES.contains(&ty) {
         // `LocalDateTime` and friends print with an ISO `T`; MySQL and Oracle
@@ -135,8 +169,17 @@ fn format_value(p: &ParsedParam) -> String {
 fn local_datetime(value: &str) -> Option<String> {
     let (date, time) = value.split_once('T')?;
     let date_ok = date.len() == 10
-        && date.bytes().enumerate().all(|(i, b)| if i == 4 || i == 7 { b == b'-' } else { b.is_ascii_digit() });
-    let time_ok = !time.is_empty() && time.bytes().all(|b| b.is_ascii_digit() || b == b':' || b == b'.');
+        && date.bytes().enumerate().all(|(i, b)| {
+            if i == 4 || i == 7 {
+                b == b'-'
+            } else {
+                b.is_ascii_digit()
+            }
+        });
+    let time_ok = !time.is_empty()
+        && time
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b == b':' || b == b'.');
     (date_ok && time_ok).then(|| format!("{date} {time}"))
 }
 
@@ -203,7 +246,13 @@ pub fn convert(text: &str) -> Option<String> {
     if statements.is_empty() {
         return None;
     }
-    Some(statements.iter().map(|s| format!("{};", s.trim_end())).collect::<Vec<_>>().join("\n\n"))
+    Some(
+        statements
+            .iter()
+            .map(|s| format!("{};", s.trim_end()))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    )
 }
 
 #[cfg(test)]
@@ -214,7 +263,10 @@ mod tests {
     fn pairs_statements_and_substitutes_parameters() {
         let log = "==>  Preparing: select * from t where id = ? and name = ?\n\
                    ==> Parameters: 1(Long), admin(String)\n";
-        assert_eq!(convert(log).as_deref(), Some("select * from t where id = 1 and name = 'admin';"));
+        assert_eq!(
+            convert(log).as_deref(),
+            Some("select * from t where id = 1 and name = 'admin';")
+        );
     }
 
     #[test]
@@ -253,7 +305,9 @@ mod tests {
                    2024-05-01(Date), 2024-05-01 10:20:30.0(Timestamp), 10:20:30(LocalTime), a(Character)\n";
         assert_eq!(
             convert(log).as_deref(),
-            Some("select 42, 3.5, 007, true, '2024-05-01', '2024-05-01 10:20:30.0', '10:20:30', 'a';")
+            Some(
+                "select 42, 3.5, 007, true, '2024-05-01', '2024-05-01 10:20:30.0', '10:20:30', 'a';"
+            )
         );
     }
 
@@ -285,7 +339,10 @@ mod tests {
         // even beside a text type (a String reading "null" is not told apart).
         let log = "==>  Preparing: select ?, ?, ?, ?, ?\n\
                    ==> Parameters: null(String), null(Long), null(Timestamp), null(Boolean), null\n";
-        assert_eq!(convert(log).as_deref(), Some("select NULL, NULL, NULL, NULL, NULL;"));
+        assert_eq!(
+            convert(log).as_deref(),
+            Some("select NULL, NULL, NULL, NULL, NULL;")
+        );
     }
 
     #[test]
@@ -294,7 +351,10 @@ mod tests {
         // it raw as broken SQL.
         let log = "==>  Preparing: select ?, ?\n\
                    ==> Parameters: not-a-number(Long), yes(Boolean)\n";
-        assert_eq!(convert(log).as_deref(), Some("select 'not-a-number', 'yes';"));
+        assert_eq!(
+            convert(log).as_deref(),
+            Some("select 'not-a-number', 'yes';")
+        );
     }
 
     #[test]
@@ -307,7 +367,10 @@ mod tests {
                    ==> Parameters: true\n\
                    ==>  Preparing: select ?\n\
                    ==> Parameters: abc\n";
-        assert_eq!(convert(log).as_deref(), Some("select 42;\n\nselect true;\n\nselect 'abc';"));
+        assert_eq!(
+            convert(log).as_deref(),
+            Some("select 42;\n\nselect true;\n\nselect 'abc';")
+        );
     }
 
     #[test]
@@ -315,7 +378,10 @@ mod tests {
         let log = "==>  Preparing: select ? and ?\n\
                    ==> Parameters: 1(Long)\n\
                    ==>  Preparing: delete from t\n";
-        assert_eq!(convert(log).as_deref(), Some("select 1 and ?;\n\ndelete from t;"));
+        assert_eq!(
+            convert(log).as_deref(),
+            Some("select 1 and ?;\n\ndelete from t;")
+        );
     }
 
     #[test]

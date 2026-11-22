@@ -14,7 +14,8 @@ const ZH_CN: &str = include_str!("../locales/zh-CN.json");
 /// no catalog here (English, or an untranslated language). Catalogs are
 /// cached per locale, so a language change takes effect without a reload.
 fn catalog() -> Option<&'static BTreeMap<String, String>> {
-    static CATALOGS: OnceLock<Mutex<BTreeMap<String, Option<&'static BTreeMap<String, String>>>>> = OnceLock::new();
+    static CATALOGS: OnceLock<Mutex<BTreeMap<String, Option<&'static BTreeMap<String, String>>>>> =
+        OnceLock::new();
     let locale = host::locale();
     let zh = locale.eq_ignore_ascii_case("zh-CN") || locale.to_ascii_lowercase().starts_with("zh-");
     let tag = if zh { "zh-CN" } else { "en" };
@@ -32,7 +33,9 @@ fn catalog() -> Option<&'static BTreeMap<String, String>> {
 
 /// `text` in the active language: the catalog's entry, or `text` itself.
 pub fn t(text: &str) -> String {
-    catalog().and_then(|c| c.get(text).cloned()).unwrap_or_else(|| text.to_owned())
+    catalog()
+        .and_then(|c| c.get(text).cloned())
+        .unwrap_or_else(|| text.to_owned())
 }
 
 /// The translated `text` with `{key}` placeholders replaced by `args` —
@@ -67,6 +70,9 @@ mod tests {
     fn keeps_english_for_other_locales() {
         let host = MockHost::install();
         host.set_locale("en");
-        assert_eq!(t("The caret is not in a Java file"), "The caret is not in a Java file");
+        assert_eq!(
+            t("The caret is not in a Java file"),
+            "The caret is not in a Java file"
+        );
     }
 }
