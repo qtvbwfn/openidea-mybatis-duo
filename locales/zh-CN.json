@@ -19,5 +19,7 @@
   "Created {rel}": "已创建 {rel}",
   "Add @Param annotations to {name}": "为 {name} 生成 @Param 注解",
   "no file is open in the editor": "编辑器中没有打开的文件",
-  "no project is open": "没有打开的项目"
+  "no project is open": "没有打开的项目",
+  "Generate XML Statement for {name}": "生成 {name} 的 XML Statement",
+  "Open the mapper's project first": "请先打开 Mapper 所属的项目"
 }
