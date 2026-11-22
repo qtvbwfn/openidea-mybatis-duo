@@ -716,7 +716,7 @@ pub struct Navigator {
 impl Navigator {
     /// The XML mapping `namespace`: the cached path while it still maps it, else a
     /// search for its `namespace="…"`, so the cost doesn't grow with the project's XML files.
-    fn xml_for(&mut self, project: &Project, namespace: &str) -> Option<(String, MapperXml)> {
+    pub(crate) fn xml_for(&mut self, project: &Project, namespace: &str) -> Option<(String, MapperXml)> {
         let root = project.root().ok()?;
         let read = |path: &str| {
             let xml = parse_xml(&project.read_file(path).ok()?);

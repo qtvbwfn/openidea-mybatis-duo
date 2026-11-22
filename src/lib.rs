@@ -315,41 +315,45 @@ impl Providers for MybatisPlus {
             host::notify(NotificationLevel::Warning, "MyBatis Duo", &t("Open the mapper's project first"));
             return Ok(action);
         };
-        let candidates = project.find_files("**/*Mapper.xml", 200).unwrap_or_default();
-        for path in candidates {
-            let Ok(text) = project.read_file(&path) else { continue };
-            let xml = parse::parse_xml(&text);
-            if xml.namespace.as_deref() != Some(iface.fqn.as_str()) {
-                continue;
-            }
-            if xml.statements.iter().any(|s| s == method_name) {
-                host::notify(
-                    NotificationLevel::Info,
-                    "MyBatis Duo",
-                    &t_with("{name}#{method} already has an XML statement", &[("name", &iface.name), ("method", &method.name)]),
-                );
-                return Ok(action);
-            }
-            let statement = generate::statement_xml(method, &iface);
-            let (from, to, insert) = generate::append_statement_edit(&text, &statement);
-            let edits = vec![TextEdit {
-                range: Range::new(position(&text, from), position(&text, to)),
-                text: insert,
-            }];
+        // The navigation index already maps every mapper XML (the gutters jump with
+        // it), so ask it for the namespace instead of a `*Mapper.xml` glob that
+        // misses once a project outgrows the search's result cap.
+        let Some((xml_path, xml)) = self.nav.xml_for(&project, &iface.fqn) else {
+            host::notify(
+                NotificationLevel::Warning,
+                "MyBatis Duo",
+                &t_with("No mapper XML for {fqn} — use 'MyBatis Duo: Create Mapper XML' first", &[("fqn", &iface.fqn)]),
+            );
             return Ok(CodeAction {
                 title: action.title.clone(),
                 kind: action.kind.clone(),
-                preferred: true,
-                edits: vec![(path, edits)],
+                preferred: action.preferred,
+                edits: Vec::new(),
                 data: None,
             });
+        };
+        if xml.statements.iter().any(|s| &s.name == method_name) {
+            host::notify(
+                NotificationLevel::Info,
+                "MyBatis Duo",
+                &t_with("{name}#{method} already has an XML statement", &[("name", &iface.name), ("method", &method.name)]),
+            );
+            return Ok(action);
         }
-        host::notify(
-            NotificationLevel::Warning,
-            "MyBatis Duo",
-            &t_with("No mapper XML for {fqn} — use 'MyBatis Duo: Create Mapper XML' first", &[("fqn", &iface.fqn)]),
-        );
-        Ok(CodeAction { title: action.title.clone(), kind: action.kind.clone(), preferred: action.preferred, edits: Vec::new(), data: None })
+        let statement = generate::statement_xml(method, &iface);
+        let text = project.read_file(&xml_path)?;
+        let (from, to, insert) = generate::append_statement_edit(&text, &statement);
+        let edits = vec![TextEdit {
+            range: Range::new(position(&text, from), position(&text, to)),
+            text: insert,
+        }];
+        Ok(CodeAction {
+            title: action.title.clone(),
+            kind: action.kind.clone(),
+            preferred: true,
+            edits: vec![(xml_path, edits)],
+            data: None,
+        })
     }
 }
 
