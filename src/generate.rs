@@ -123,6 +123,16 @@ pub fn mapper_xml_content(iface: &MapperInterface) -> String {
     }
 }
 
+/// The whole mapper XML carrying just one statement: what a fresh mapper for
+/// the method starts with (the interface's other methods generate on demand).
+pub fn mapper_xml_with_statement(m: &JavaMethod, iface: &MapperInterface) -> String {
+    let header = concat!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n",
+        "<!DOCTYPE mapper PUBLIC \"-//mybatis.org//DTD Mapper 3.0//EN\" \"http://mybatis.org/dtd/mybatis-3-mapper.dtd\"\n"
+    );
+    format!("{header}<mapper namespace=\"{}\">\n\n{}\n</mapper>\n", iface.fqn, statement_xml(m, iface))
+}
+
 /// Where a generated statement goes: before `</mapper>`, else the end of the file.
 pub fn append_statement_edit(xml_text: &str, stmt_xml: &str) -> Edit {
     if let Some(close) = xml_text.rfind("</mapper>") {

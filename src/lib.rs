@@ -241,25 +241,31 @@ impl Providers for MybatisPlus {
         self.nav.completion(doc, at, trigger)
     }
 
-    /// `Add @Param annotations` as a quickfix on the mapper method under the
-    /// caret; edits stay in the current file (annotations + the import). The
-    /// statement generation is offered the same way, but its edits land in the
-    /// mapper XML and need the project to find that file, so they are computed
-    /// in `resolve_code_action` (the command budget) after the user picks it.
+    /// The three MyBatis actions stay listed on every mapper interface (and on
+    /// its methods): each one re-checks on resolve what the mapper already has
+    /// — and jumps there — and what it lacks — and creates. The edit-budget
+    /// call only parses the interface; everything heavy resolves on the
+    /// command budget in [`Self::resolve_code_action`].
     fn code_actions(&mut self, doc: &Document, selection: Range) -> Vec<CodeAction> {
         if doc.language != "java" {
             return Vec::new();
         }
         let Some(iface) = parse::parse_java(&doc.text) else { return Vec::new() };
-        let Some(cursor) = offset(&doc.text, selection.start) else { return Vec::new() };
+        let mut actions = vec![CodeAction {
+            title: t("Create Mapper XML"),
+            kind: None,
+            preferred: false,
+            edits: Vec::new(),
+            data: Some("xml".into()),
+        }];
+        let Some(cursor) = offset(&doc.text, selection.start) else { return actions };
         let Some(method) = iface
             .methods
             .iter()
             .find(|m| cursor >= m.extent.0 && cursor < m.extent.1)
         else {
-            return Vec::new();
+            return actions;
         };
-        let mut actions = Vec::new();
         if method.kind.is_some() && !method.default_method {
             actions.push(CodeAction {
                 title: t_with("Generate XML Statement for {name}", &[("name", &method.name)]),
@@ -269,91 +275,169 @@ impl Providers for MybatisPlus {
                 data: Some(format!("statement:{}", method.name)),
             });
         }
-        let mut edits = generate::param_annotation_edits(&iface, Some(method));
-        if let Some(import) = generate::import_edit(&doc.text) {
-            edits.push(import);
-        }
-        if !edits.is_empty() {
-            let text_edits: Vec<TextEdit> = edits
-                .iter()
-                .map(|(from, to, insert)| TextEdit {
-                    range: Range::new(position(&doc.text, *from), position(&doc.text, *to)),
-                    text: insert.clone(),
-                })
-                .collect();
-            actions.push(CodeAction {
-                title: t_with("Add @Param annotations to {name}", &[("name", &method.name)]),
-                kind: Some("quickfix".into()),
-                preferred: true,
-                edits: vec![(doc.path.clone(), text_edits)],
-                data: None,
-            });
-        }
+        actions.push(CodeAction {
+            title: t_with("Add @Param annotations to {name}", &[("name", &method.name)]),
+            kind: None,
+            preferred: false,
+            edits: Vec::new(),
+            data: Some(format!("param:{}", method.name)),
+        });
         actions
     }
 
-    /// Resolves the statement generation: finds the interface's mapper XML in
-    /// the project and returns the edit that appends the statement before
-    /// `</mapper>` (the host applies the multi-file edit). Everything else
-    /// comes back untouched.
+    /// Resolves the three actions. What the mapper already has is jumped to
+    /// (`host::open_location`); what it lacks is created — the statement lands
+    /// in the mapper XML through a multi-file edit, so it stays undoable, while
+    /// a fresh mapper XML is written directly (nothing to undo yet).
     fn resolve_code_action(&mut self, doc: &Document, action: CodeAction) -> Result<CodeAction, Error> {
         let Some(data) = &action.data else { return Ok(action) };
-        let Some(method_name) = data.strip_prefix("statement:") else { return Ok(action) };
-        let Some(iface) = parse::parse_java(&doc.text) else { return Ok(action) };
-        let Some(method) = iface.methods.iter().find(|m| &m.name == method_name) else {
-            return Ok(action);
-        };
-        let Some(kind) = &method.kind else {
-            host::notify(
-                NotificationLevel::Warning,
-                "MyBatis Duo",
-                &t("This method carries SQL annotations or is a default method — it needs no XML statement"),
-            );
-            return Ok(action);
-        };
+        let Some(iface) = parse::parse_java(&doc.text) else { return Ok(spent(&action)) };
         let Some(project) = host::project_of(&doc.path) else {
             host::notify(NotificationLevel::Warning, "MyBatis Duo", &t("Open the mapper's project first"));
-            return Ok(action);
+            return Ok(spent(&action));
         };
-        // The navigation index already maps every mapper XML (the gutters jump with
-        // it), so ask it for the namespace instead of a `*Mapper.xml` glob that
-        // misses once a project outgrows the search's result cap.
-        let Some((xml_path, xml)) = self.nav.xml_for(&project, &iface.fqn) else {
-            host::notify(
-                NotificationLevel::Warning,
-                "MyBatis Duo",
-                &t_with("No mapper XML for {fqn} — use 'MyBatis Duo: Create Mapper XML' first", &[("fqn", &iface.fqn)]),
-            );
-            return Ok(CodeAction {
-                title: action.title.clone(),
-                kind: action.kind.clone(),
-                preferred: action.preferred,
-                edits: Vec::new(),
-                data: None,
-            });
-        };
-        if xml.statements.iter().any(|s| &s.name == method_name) {
-            host::notify(
-                NotificationLevel::Info,
-                "MyBatis Duo",
-                &t_with("{name}#{method} already has an XML statement", &[("name", &iface.name), ("method", &method.name)]),
-            );
-            return Ok(action);
+        let root = project.root()?.trim_end_matches('/').to_owned();
+        match data.as_str() {
+            // The mapper XML: jump to its namespace when the interface's mapper
+            // exists, else create it at the Spring convention path. A file that is
+            // already there but maps something else is never overwritten.
+            "xml" => {
+                if let Some((path, xml)) = self.nav.xml_for(&project, &iface.fqn) {
+                    let line = xml.namespace.as_ref().map(|n| n.range.start.line).unwrap_or(0);
+                    host::open_location(&path, line, 0)?;
+                    return Ok(spent(&action));
+                }
+                let rel = format!("src/main/resources/{}/{}.xml", iface.pkg.replace('.', "/"), iface.name);
+                let target = format!("{root}/{rel}");
+                if project.exists(&target).unwrap_or(true) {
+                    host::notify(
+                        NotificationLevel::Warning,
+                        "MyBatis Duo",
+                        &t_with("{rel} already exists", &[("rel", &rel)]),
+                    );
+                    return Ok(spent(&action));
+                }
+                if let Err(e) = project.write_file(&target, &generate::mapper_xml_content(&iface)) {
+                    host::notify(NotificationLevel::Warning, "MyBatis Duo", &format!("{target}: {e}"));
+                    return Ok(spent(&action));
+                }
+                host::notify(
+                    NotificationLevel::Info,
+                    "MyBatis Duo",
+                    &t_with("Created {rel}", &[("rel", &rel)]),
+                );
+                host::open_location(&target, 0, 0)?;
+                Ok(spent(&action))
+            }
+            // The statement: jump to it when the XML has it; append it through the
+            // host's edit when the XML exists without it; create the XML with just
+            // this statement when there is none.
+            data if data.starts_with("statement:") => {
+                let method_name = &data["statement:".len()..];
+                let Some(method) = iface.methods.iter().find(|m| &m.name == method_name) else {
+                    return Ok(spent(&action));
+                };
+                let Some(kind) = &method.kind else {
+                    host::notify(
+                        NotificationLevel::Warning,
+                        "MyBatis Duo",
+                        &t("This method carries SQL annotations or is a default method — it needs no XML statement"),
+                    );
+                    return Ok(spent(&action));
+                };
+                let Some((xml_path, xml)) = self.nav.xml_for(&project, &iface.fqn) else {
+                    let rel = format!("src/main/resources/{}/{}.xml", iface.pkg.replace('.', "/"), iface.name);
+                    let target = format!("{root}/{rel}");
+                    if project.exists(&target).unwrap_or(true) {
+                        host::notify(
+                            NotificationLevel::Warning,
+                            "MyBatis Duo",
+                            &t_with("{rel} already exists", &[("rel", &rel)]),
+                        );
+                        return Ok(spent(&action));
+                    }
+                    if let Err(e) = project.write_file(&target, &generate::mapper_xml_with_statement(method, &iface)) {
+                        host::notify(NotificationLevel::Warning, "MyBatis Duo", &format!("{target}: {e}"));
+                        return Ok(spent(&action));
+                    }
+                    host::notify(
+                        NotificationLevel::Info,
+                        "MyBatis Duo",
+                        &t_with("Created {rel} with <{method}>", &[("rel", &rel), ("method", &method.name)]),
+                    );
+                    host::open_location(&target, 4, 0)?;
+                    return Ok(spent(&action));
+                };
+                if let Some(s) = xml.statements.iter().find(|s| &s.name == method_name) {
+                    host::open_location(&xml_path, s.range.start.line, s.range.start.character)?;
+                    return Ok(spent(&action));
+                }
+                let text = project.read_file(&xml_path)?;
+                let statement = generate::statement_xml(method, &iface);
+                let (from, to, insert) = generate::append_statement_edit(&text, &statement);
+                Ok(CodeAction {
+                    title: action.title.clone(),
+                    kind: action.kind.clone(),
+                    preferred: true,
+                    edits: vec![(
+                        xml_path,
+                        vec![TextEdit {
+                            range: Range::new(position(&text, from), position(&text, to)),
+                            text: insert,
+                        }],
+                    )],
+                    data: None,
+                })
+            }
+            // The annotations: apply the missing ones to the interface; a fully
+            // annotated method stays untouched (the resolve returns no edits).
+            data if data.starts_with("param:") => {
+                let method_name = &data["param:".len()..];
+                let Some(method) = iface.methods.iter().find(|m| &m.name == method_name) else {
+                    return Ok(spent(&action));
+                };
+                let mut edits = generate::param_annotation_edits(&iface, Some(method));
+                if edits.is_empty() {
+                    // Every parameter is annotated already: nothing to do, not even
+                    // the import (the user asked exactly for this).
+                    host::notify(
+                        NotificationLevel::Info,
+                        "MyBatis Duo",
+                        &t_with("All parameters of {name} already have @Param", &[("name", &method.name)]),
+                    );
+                    return Ok(spent(&action));
+                }
+                if let Some(import) = generate::import_edit(&doc.text) {
+                    edits.push(import);
+                }
+                let text_edits: Vec<TextEdit> = edits
+                    .iter()
+                    .map(|(from, to, insert)| TextEdit {
+                        range: Range::new(position(&doc.text, *from), position(&doc.text, *to)),
+                        text: insert.clone(),
+                    })
+                    .collect();
+                Ok(CodeAction {
+                    title: action.title.clone(),
+                    kind: action.kind.clone(),
+                    preferred: true,
+                    edits: vec![(doc.path.clone(), text_edits)],
+                    data: None,
+                })
+            }
+            _ => Ok(action),
         }
-        let statement = generate::statement_xml(method, &iface);
-        let text = project.read_file(&xml_path)?;
-        let (from, to, insert) = generate::append_statement_edit(&text, &statement);
-        let edits = vec![TextEdit {
-            range: Range::new(position(&text, from), position(&text, to)),
-            text: insert,
-        }];
-        Ok(CodeAction {
-            title: action.title.clone(),
-            kind: action.kind.clone(),
-            preferred: true,
-            edits: vec![(xml_path, edits)],
-            data: None,
-        })
+    }
+}
+
+/// An action whose resolve ran: the `data` reference is consumed either way.
+fn spent(action: &CodeAction) -> CodeAction {
+    CodeAction {
+        title: action.title.clone(),
+        kind: action.kind.clone(),
+        preferred: action.preferred,
+        edits: Vec::new(),
+        data: None,
     }
 }
 
@@ -374,25 +458,43 @@ public interface UserMapper {
 "#;
 
     #[test]
-    fn the_param_quickfix_fires_inside_the_method() {
+    fn the_three_actions_stay_listed_and_the_param_one_resolves() {
         let host = MockHost::install();
-        host.open_editor("/p/src/UserMapper.java", "java", MAPPER, &[(5, 12, 5, 12)]);
+        host.open_editor("/project/src/UserMapper.java", "java", MAPPER, &[(5, 12, 5, 12)]);
         let doc = Document {
-            path: "/p/src/UserMapper.java".into(),
+            path: "/project/src/UserMapper.java".into(),
             language: "java".into(),
             version: 1,
             text: MAPPER.into(),
         };
         let actions = MybatisPlus::default().code_actions(&doc, host.invocation().editor().unwrap().selections().unwrap()[0]);
-        assert_eq!(actions.len(), 2, "{actions:?}");
-        let statement = actions.iter().find(|a| a.data.is_some()).expect("the statement action");
-        assert_eq!(statement.data.as_deref(), Some("statement:findByName"));
-        assert!(statement.edits.is_empty(), "the edits resolve after the pick");
-        let param = actions
-            .iter()
-            .find(|a| a.title.contains("findByName") && a.data.is_none())
-            .expect("the @Param quickfix");
-        assert_eq!(param.edits[0].1.len(), 3, "two annotations + the import");
+        // Create XML, Generate Statement, Add @Param — all three, all lazy.
+        assert_eq!(actions.len(), 3, "{actions:?}");
+        assert!(actions.iter().all(|a| a.edits.is_empty()));
+        assert_eq!(
+            actions.iter().filter_map(|a| a.data.as_deref()).collect::<Vec<_>>(),
+            ["xml", "statement:findByName", "param:findByName"]
+        );
+
+        // Resolving the @Param action applies the two annotations and the import
+        // to the interface itself.
+        let param = actions.iter().find(|a| a.data.as_deref() == Some("param:findByName")).unwrap().clone();
+        let resolved = MybatisPlus::default().resolve_code_action(&doc, param).unwrap();
+        assert_eq!(resolved.edits.len(), 1, "{resolved:?}");
+        assert_eq!(resolved.edits[0].0, "/project/src/UserMapper.java");
+        assert_eq!(resolved.edits[0].1.len(), 3, "two annotations + the import");
+        assert!(resolved.data.is_none(), "the reference is consumed on resolve");
+
+        // An already-annotated method resolves into no edits at all.
+        let annotated = MAPPER.replace(
+            "String name, int size",
+            "@Param(\"name\") String name, @Param(\"size\") int size",
+        );
+        let doc = Document { text: annotated, ..doc };
+        let actions = MybatisPlus::default().code_actions(&doc, host.invocation().editor().unwrap().selections().unwrap()[0]);
+        let param = actions.iter().find(|a| a.data.as_deref() == Some("param:findByName")).unwrap().clone();
+        let resolved = MybatisPlus::default().resolve_code_action(&doc, param).unwrap();
+        assert!(resolved.edits.is_empty(), "nothing to do: {resolved:?}");
     }
 
     #[test]
