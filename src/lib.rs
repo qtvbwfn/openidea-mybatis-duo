@@ -14,6 +14,7 @@ use i18n::{t, t_with};
 use openidea_plugin::indexing::DocumentIndexer;
 use openidea_plugin::providers::{CodeAction, CompletionItem, Document, Providers};
 use openidea_plugin::text::{offset, position};
+use openidea_plugin::{Diagnostic, Severity};
 use openidea_plugin::{
     Error, Invocation, NotificationAction, NotificationLevel, PickItem, Plugin, Position, Range,
     TextEdit, host, register_plugin,
@@ -371,7 +372,57 @@ impl DocumentIndexer for MybatisPlus {
         &mut self,
         doc: &openidea_plugin::indexing::Document,
     ) -> openidea_plugin::indexing::Edges {
-        self.nav.index(doc)
+        let edges = self.nav.index(doc);
+        self.publish_param_diagnostics(doc);
+        edges
+    }
+}
+
+impl MybatisPlus {
+    /// @Param diagnostics for a mapper interface's multi-parameter methods: a
+    /// mapper's extra parameters need `@Param` for the `#{…}` bindings, and the
+    /// resolve/generate actions add them. Publishing replaces the file's set,
+    /// so fixed parameters clear their warnings. Interfaces that are not
+    /// mappers — by the name's own suffix, or unless the index has seen their
+    /// mapper XML — stay clean, so ordinary interfaces get no warnings.
+    fn publish_param_diagnostics(&mut self, doc: &openidea_plugin::indexing::Document) {
+        if !doc.path.ends_with(".java") {
+            return;
+        }
+        let Some(iface) = parse::parse_java(&doc.text) else {
+            let _ = host::publish_diagnostics(&doc.path, &[]);
+            return;
+        };
+        let is_mapper = self.nav.mapper_files.contains_key(&iface.fqn)
+            || iface.fqn.rsplit('.').next().is_some_and(|simple| {
+                simple.ends_with("Mapper")
+                    || simple.ends_with("Dao")
+                    || simple.ends_with("Repository")
+            });
+        let mut items: Vec<Diagnostic> = Vec::new();
+        if is_mapper {
+            for method in &iface.methods {
+                if method.default_method {
+                    continue;
+                }
+                for (from, _to, _) in generate::param_annotation_edits(&iface, Some(method)) {
+                    items.push(Diagnostic {
+                        range: Range::new(position(&doc.text, from), position(&doc.text, from)),
+                        severity: Severity::Warning,
+                        message: t_with(
+                            "Parameter of {name} has no @Param — generate it with MyBatis Duo",
+                            &[("name", &method.name)],
+                        ),
+                        code: Some("mybatis-param".into()),
+                        source: None,
+                        unnecessary: false,
+                        deprecated: false,
+                        related: Vec::new(),
+                    });
+                }
+            }
+        }
+        let _ = host::publish_diagnostics(&doc.path, &items);
     }
 }
 
@@ -776,6 +827,47 @@ public interface UserMapper {
     }
 
     #[test]
+    fn missing_params_publish_diagnostics_that_clear_when_fixed() {
+        let host = MockHost::install();
+        host.open_editor(
+            "/project/src/UserMapper.java",
+            "java",
+            MAPPER,
+            &[(5, 12, 5, 12)],
+        );
+        let indexed_doc = openidea_plugin::indexing::Document {
+            path: "/project/src/UserMapper.java".into(),
+            text: MAPPER.into(),
+            symbols: Vec::new(),
+        };
+        MybatisPlus::default().index(&indexed_doc);
+        let diags = host.diagnostics();
+        let items = diags
+            .get("/project/src/UserMapper.java")
+            .expect("the mapper's diagnostics are published");
+        // Both parameters lack @Param (a two-parameter method needs them).
+        assert_eq!(items.len(), 2, "{items:?}");
+        assert!(items[0].message.contains("no @Param"));
+
+        // Fixing the parameters clears the warnings on the next pass.
+        let fixed = MAPPER.replace(
+            "String name, int size",
+            "@Param(\"name\") String name, @Param(\"size\") int size",
+        );
+        let fixed_doc = openidea_plugin::indexing::Document {
+            path: "/project/src/UserMapper.java".into(),
+            text: fixed,
+            symbols: Vec::new(),
+        };
+        MybatisPlus::default().index(&fixed_doc);
+        assert!(
+            host.diagnostics()
+                .get("/project/src/UserMapper.java")
+                .is_none_or(|items| items.is_empty())
+        );
+    }
+
+    #[test]
     fn the_actions_filter_on_the_indexed_mapper_state() {
         let host = MockHost::install();
         host.open_editor(
@@ -832,6 +924,51 @@ public interface UserMapper {
         );
         assert_eq!(actions.len(), 3, "{actions:?}");
         assert_eq!(actions[0].data.as_deref(), Some("xml"));
+    }
+
+    #[test]
+    fn a_single_parameter_method_gets_param_annotations_too() {
+        // MyBatisX asks for @Param on every mapper parameter; the previous
+        // "two parameters only" rule skipped `selectByProdOrderNo(String)` and
+        // then claimed everything was annotated already.
+        const SINGLE: &str = r#"
+package com.steerinfo.pcmplnproductionorder.mapper;
+
+public interface PcmPlnProductionorderMapper {
+    PcmPlnProductionorder selectByProdOrderNo(String prodOrderNo);
+}
+"#;
+        let host = MockHost::install();
+        host.open_editor(
+            "/project/src/PcmPlnProductionorderMapper.java",
+            "java",
+            SINGLE,
+            &[(4, 20, 4, 20)],
+        );
+        let doc = Document {
+            path: "/project/src/PcmPlnProductionorderMapper.java".into(),
+            language: "java".into(),
+            version: 1,
+            text: SINGLE.into(),
+        };
+        let actions = MybatisPlus::default().code_actions(
+            &doc,
+            host.invocation().editor().unwrap().selections().unwrap()[0],
+        );
+        let param = actions
+            .iter()
+            .find(|a| a.data.as_deref() == Some("param:selectByProdOrderNo"))
+            .expect("the single parameter is offered @Param too")
+            .clone();
+        let resolved = MybatisPlus::default()
+            .resolve_code_action(&doc, param)
+            .unwrap();
+        assert_eq!(resolved.edits.len(), 1, "{resolved:?}");
+        assert!(
+            resolved.edits[0].1[0]
+                .text
+                .contains("@Param(\"prodOrderNo\")")
+        );
     }
 
     #[test]
@@ -973,6 +1110,7 @@ public interface UserMapper {
     #[test]
     fn index_publishes_namespace_and_xml_parameter_anchors() {
         use openidea_plugin::indexing::Document as IndexDocument;
+        let _host = MockHost::install();
         let mut plugin = MybatisPlus::default();
         let java = IndexDocument {
             path: "/p/UserMapper.java".into(),

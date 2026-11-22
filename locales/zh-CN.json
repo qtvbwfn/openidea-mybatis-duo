@@ -23,5 +23,6 @@
   "Generate XML Statement for {name}": "生成 {name} 的 XML Statement",
   "Open the mapper's project first": "请先打开 Mapper 所属的项目",
   "Open the mapper XML": "打开 Mapper XML",
-  "Go to the statement": "跳转到该 statement"
+  "Go to the statement": "跳转到该 statement",
+  "Parameter of {name} has no @Param — generate it with MyBatis Duo": "参数缺少 @Param——可用 MyBatis Duo 生成"
 }

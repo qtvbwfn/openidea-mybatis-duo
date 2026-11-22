@@ -245,7 +245,7 @@ pub fn param_annotation_edits(iface: &MapperInterface, scope: Option<&JavaMethod
             }
             if let Some((from, to)) = p.empty_param_at {
                 edits.push((from, to, format!("@Param(\"{}\")", p.name)));
-            } else if m.params.len() >= 2 {
+            } else {
                 edits.push((p.start, p.start, format!("@Param(\"{}\") ", p.name)));
             }
         }
