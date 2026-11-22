@@ -15,8 +15,8 @@ use openidea_plugin::indexing::DocumentIndexer;
 use openidea_plugin::providers::{CodeAction, CompletionItem, Document, Providers};
 use openidea_plugin::text::{offset, position};
 use openidea_plugin::{
-    Error, Invocation, NotificationLevel, PickItem, Plugin, Position, Range, TextEdit, host,
-    register_plugin,
+    Error, Invocation, NotificationAction, NotificationLevel, PickItem, Plugin, Position, Range,
+    TextEdit, host, register_plugin,
 };
 
 #[derive(Default)]
@@ -30,13 +30,13 @@ impl Plugin for MybatisPlus {
         &mut self,
         id: &str,
         ctx: &Invocation,
-        _arg: Option<&str>,
+        arg: Option<&str>,
     ) -> Result<Option<String>, Error> {
         match id {
             "convert-sql-log" => convert_sql_log(ctx),
             "generate-statement" => generate_statement(&mut self.nav, ctx),
             "create-mapper-xml" => create_mapper_xml(ctx),
-            "goto-mapper-xml" => goto_mapper_xml(&mut self.nav, ctx),
+            "goto-mapper-xml" => goto_mapper_xml(&mut self.nav, ctx, arg),
             other => Err(Error::NotFound(format!("command {other}"))),
         }
     }
@@ -46,7 +46,23 @@ impl Plugin for MybatisPlus {
 /// `@Param`, result map, `<include>` target); an XML statement id opens the
 /// method. Several targets are offered in a picker. This is the direct jump the
 /// host's ⌘B no longer gives on a declaration (it shows usages there).
-fn goto_mapper_xml(nav: &mut nav::Navigator, ctx: &Invocation) -> Result<Option<String>, Error> {
+fn goto_mapper_xml(
+    nav: &mut nav::Navigator,
+    ctx: &Invocation,
+    arg: Option<&str>,
+) -> Result<Option<String>, Error> {
+    // A resolved jump: "path|line|column" from the notification actions (`|`
+    // keeps Windows drive letters whole). The command context carries the
+    // project, so this opens where the bare resolve could not.
+    if let Some(arg) = arg {
+        let mut parts = arg.splitn(3, '|');
+        if let (Some(path), Some(line), Some(col)) = (parts.next(), parts.next(), parts.next())
+            && let (Ok(line), Ok(col)) = (line.parse::<u32>(), col.parse::<u32>())
+        {
+            host::open_location(path, line, col)?;
+            return Ok(Some(path.to_owned()));
+        }
+    }
     let editor = ctx
         .editor()
         .ok_or_else(|| Error::Invalid(t("no file is open in the editor")))?;
@@ -455,15 +471,25 @@ impl Providers for MybatisPlus {
             // exists, else create it at the Spring convention path. A file that is
             // already there but maps something else is never overwritten.
             "xml" => {
-                if let Some((path, _)) = self.nav.xml_for(&project, &iface.fqn) {
-                    host::notify(
+                if let Some((path, xml)) = self.nav.xml_for(&project, &iface.fqn) {
+                    // The jump needs an invocation with the workspace root, which
+                    // the resolve does not carry on upstream hosts: offer it as the
+                    // notification's action, run in the window's own context.
+                    let line = xml
+                        .namespace
+                        .as_ref()
+                        .map(|n| n.range.start.line)
+                        .unwrap_or(0);
+                    host::notify_with_actions(
                         NotificationLevel::Info,
                         "MyBatis Duo",
-                        &t_with(
-                            "Mapper XML already exists: {path} — the gutter arrow jumps to it",
-                            &[("path", &path)],
-                        ),
-                    );
+                        &t_with("The mapper XML already exists ({rel})", &[("rel", &path)]),
+                        &[NotificationAction {
+                            label: t("Open the mapper XML"),
+                            command: "goto-mapper-xml".into(),
+                            argument: Some(format!("{path}|{line}|0")),
+                        }],
+                    )?;
                     return Ok(spent(&action));
                 }
                 let rel = format!(
@@ -550,14 +576,23 @@ impl Providers for MybatisPlus {
                     return Ok(spent(&action));
                 };
                 if let Some(s) = xml.statements.iter().find(|s| &s.name == method_name) {
-                    host::notify(
+                    // The same: the button jumps with the window's own context.
+                    host::notify_with_actions(
                         NotificationLevel::Info,
                         "MyBatis Duo",
                         &t_with(
-                            "The statement already exists on line {line} — the gutter arrow jumps to it",
+                            "The statement already exists on line {line}",
                             &[("line", &(s.range.start.line + 1).to_string())],
                         ),
-                    );
+                        &[NotificationAction {
+                            label: t("Go to the statement"),
+                            command: "goto-mapper-xml".into(),
+                            argument: Some(format!(
+                                "{xml_path}|{}|{}",
+                                s.range.start.line, s.range.start.character
+                            )),
+                        }],
+                    )?;
                     return Ok(spent(&action));
                 }
                 let text = project.read_file(&xml_path)?;
