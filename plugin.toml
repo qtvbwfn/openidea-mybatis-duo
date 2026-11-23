@@ -1,6 +1,6 @@
 id = "qtvbwfn.mybatis-duo"
 name = "MyBatis Duo"
-version = "0.3.7"
+version = "0.3.8"
 description = "Mapper navigation both ways (gutter arrows, Go to Definition), statement generation and completion, the @Param quickfix and SQL-log conversion. Uninstall the official MyBatis Navigator first: both navigate, and two of them show every gutter arrow twice. Mapper 双向导航（行槽箭头、转到定义）、Mapper Statement 生成与补全、@Param 快速修复与 SQL 日志转换。安装前请先卸载官方 MyBatis Navigator：两者都提供导航，同时启用会重复显示行槽箭头。"
 authors = ["qtvbwfn"]
 license = "Apache-2.0"

@@ -34,7 +34,7 @@ impl Plugin for MybatisPlus {
         arg: Option<&str>,
     ) -> Result<Option<String>, Error> {
         match id {
-            "convert-sql-log" => convert_sql_log(ctx),
+            "convert-sql-log" => convert_sql_log(ctx, arg),
             "generate-statement" => generate_statement(&mut self.nav, ctx),
             "create-mapper-xml" => create_mapper_xml(ctx),
             "goto-mapper-xml" => goto_mapper_xml(&mut self.nav, ctx, arg),
@@ -167,21 +167,28 @@ fn statement_kind(method: &parse::JavaMethod) -> Result<Option<parse::Kind>, Err
     )
 }
 
-/// `Copy MyBatis SQL` for the editor selection: the converter is pure, the
-/// result goes to the clipboard.
-fn convert_sql_log(ctx: &Invocation) -> Result<Option<String>, Error> {
-    let editor = ctx
-        .editor()
-        .ok_or_else(|| Error::Invalid(t("no file is open in the editor")))?;
-    let doc = editor.document()?;
-    let selections = editor.selections()?;
-    let mut parts = Vec::new();
-    for r in &selections {
-        if let Some(text) = doc.text_in(*r) {
-            parts.push(text.to_string());
+/// `Copy MyBatis SQL`: the converter is pure, the result goes to the clipboard.
+/// A passed `arg` (the host's Run console hands over its selection) is what gets
+/// converted; without one the editor's selection is used.
+fn convert_sql_log(ctx: &Invocation, arg: Option<&str>) -> Result<Option<String>, Error> {
+    let text = match arg {
+        Some(arg) => arg.to_owned(),
+        None => {
+            let editor = ctx
+                .editor()
+                .ok_or_else(|| Error::Invalid(t("no file is open in the editor")))?;
+            let doc = editor.document()?;
+            let selections = editor.selections()?;
+            let mut parts = Vec::new();
+            for r in &selections {
+                if let Some(text) = doc.text_in(*r) {
+                    parts.push(text.to_string());
+                }
+            }
+            parts.join("\n")
         }
-    }
-    let Some(sql) = sqllog::convert(&parts.join("\n")) else {
+    };
+    let Some(sql) = sqllog::convert(&text) else {
         host::notify(
             NotificationLevel::Warning,
             "MyBatis SQL",
@@ -1019,6 +1026,22 @@ public interface PcmPlnProductionorderMapper {
             .unwrap();
         assert_eq!(out.as_deref(), Some("select 1;"));
         assert_eq!(host.clipboard().as_deref(), Some("select 1;"));
+    }
+
+    #[test]
+    fn a_console_invocation_converts_the_passed_text() {
+        // The host's Run console passes its selection as the command's argument,
+        // with no editor focused: the arg is what gets converted.
+        let host = MockHost::install();
+        let log = "==>  Preparing: select id from users where code = ?\n==> Parameters: 00123(String)\n";
+        let out = MybatisPlus::default()
+            .run_command("convert-sql-log", &host.invocation(), Some(log))
+            .unwrap();
+        assert_eq!(out.as_deref(), Some("select id from users where code = '00123';"));
+        assert_eq!(
+            host.clipboard().as_deref(),
+            Some("select id from users where code = '00123';")
+        );
     }
 
     #[test]
