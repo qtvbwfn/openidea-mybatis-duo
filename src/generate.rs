@@ -195,9 +195,11 @@ pub fn mapper_xml_content(iface: &MapperInterface) -> String {
 /// The whole mapper XML carrying just one statement: what a fresh mapper for
 /// the method starts with (the interface's other methods generate on demand).
 pub fn mapper_xml_with_statement(m: &JavaMethod, iface: &MapperInterface, kind: Kind) -> String {
+    // Same valid header as `mapper_xml_content` (the DOCTYPE must close with `>`,
+    // else the emitted XML fails to parse at the DOCTYPE line).
     let header = concat!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n",
-        "<!DOCTYPE mapper PUBLIC \"-//mybatis.org//DTD Mapper 3.0//EN\" \"http://mybatis.org/dtd/mybatis-3-mapper.dtd\"\n"
+        "<!DOCTYPE mapper PUBLIC \"-//mybatis.org//DTD Mapper 3.0//EN\" \"http://mybatis.org/dtd/mybatis-3-mapper.dtd\">\n"
     );
     format!(
         "{header}<mapper namespace=\"{}\">\n\n{}\n</mapper>\n",
@@ -232,6 +234,26 @@ pub fn append_statement_edit(xml_text: &str, stmt_xml: &str) -> Edit {
 /// `@Param` / `@Param()` without a value is filled with the parameter name,
 /// and multi-parameter methods get `@Param("name") ` before every parameter
 /// that has none (single-parameter methods need no annotation in MyBatis).
+/// The single parameter when it is a collection/array: MyBatis binds it under
+/// its default aliases (`list` / `collection` / `array`), so annotating it with
+/// the Java name would rename the binding and break existing XML that references
+/// those aliases (`BindingException: Parameter 'list' not found`). Such a
+/// parameter is left untouched — the default-alias contract wins over the
+/// annotation.
+fn single_collection_param(m: &JavaMethod) -> Option<&JavaParam> {
+    let [p] = &m.params[..] else { return None };
+    let collection = COLLECTION_PREFIXES
+        .iter()
+        .any(|c| p.ty == *c || p.ty.starts_with(&format!("{c}<")))
+        || p.ty.ends_with("[]");
+    collection.then_some(p)
+}
+
+/// `@Param` edits for `scope` (one method) or the whole interface: a written
+/// `@Param` / `@Param()` without a value is filled with the parameter name,
+/// and multi-parameter methods get `@Param("name") ` before every parameter
+/// that has none. A lone collection/array parameter is left untouched (see
+/// [`single_collection_param`]); a lone scalar one still gets annotated.
 pub fn param_annotation_edits(iface: &MapperInterface, scope: Option<&JavaMethod>) -> Vec<Edit> {
     let methods: &[JavaMethod] = match scope {
         Some(m) => std::slice::from_ref(m),
@@ -239,6 +261,11 @@ pub fn param_annotation_edits(iface: &MapperInterface, scope: Option<&JavaMethod
     };
     let mut edits = Vec::new();
     for m in methods {
+        // A lone collection/array parameter keeps MyBatis' default-alias binding;
+        // annotating it would break XML that references `list`/`collection`/`array`.
+        if single_collection_param(m).is_some() {
+            continue;
+        }
         for p in &m.params {
             if p.has_param {
                 continue;
@@ -377,6 +404,53 @@ public interface UserMapper {
         assert!(edits.iter().any(|(_, _, ins)| ins == "@Param(\"status\") "));
         // Single-parameter methods with @Param stay untouched.
         assert!(param_annotation_edits(&iface, Some(&iface.methods[2])).is_empty());
+    }
+
+    #[test]
+    fn single_collection_parameter_keeps_its_default_alias() {
+        // A single collection/array parameter is bound by MyBatis under the
+        // default aliases (`list`/`collection`/`array`); annotating it with the
+        // Java name would break XML that references those aliases (P2 from the
+        // registry review, MyBatis 3.5.19 BindingException). So no edit is
+        // produced for it, and a lone scalar parameter is still annotated.
+        let text = r#"
+package com.example.mapper;
+import java.util.List;
+import com.example.User;
+
+public interface M {
+    int saveAll(List<String> users);
+
+    User findById(long id);
+}
+"#;
+        let iface = parse_java(text).unwrap();
+        assert!(
+            param_annotation_edits(&iface, Some(&iface.methods[0])).is_empty(),
+            "single collection parameter must not be annotated"
+        );
+        let scalar = param_annotation_edits(&iface, Some(&iface.methods[1]));
+        assert_eq!(scalar.len(), 1, "{scalar:?}");
+        assert!(scalar[0].2.contains("@Param(\"id\")"), "{scalar:?}");
+    }
+
+    #[test]
+    fn mapper_xml_with_statement_has_closed_doctype_and_parses() {
+        let iface = parse_java(MAPPER).unwrap();
+        let m = &iface.methods[0];
+        let xml = mapper_xml_with_statement(m, &iface, m.kind.unwrap_or(Kind::Select));
+        // The DOCTYPE must close with `>` (the bug wrote it without the terminator).
+        assert!(xml.contains("mybatis-3-mapper.dtd\">\n"), "{xml}");
+        // The emitted XML parses and exposes its namespace and statement id.
+        let parsed = crate::nav::parse_xml(&xml);
+        assert_eq!(
+            parsed.namespace.as_ref().map(|n| n.name.as_str()),
+            Some("com.example.mapper.UserMapper")
+        );
+        assert!(
+            parsed.statements.iter().any(|s| s.name == "findByStatus"),
+            "{xml}"
+        );
     }
 
     #[test]

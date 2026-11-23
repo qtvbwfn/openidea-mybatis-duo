@@ -1033,11 +1033,15 @@ public interface PcmPlnProductionorderMapper {
         // The host's Run console passes its selection as the command's argument,
         // with no editor focused: the arg is what gets converted.
         let host = MockHost::install();
-        let log = "==>  Preparing: select id from users where code = ?\n==> Parameters: 00123(String)\n";
+        let log =
+            "==>  Preparing: select id from users where code = ?\n==> Parameters: 00123(String)\n";
         let out = MybatisPlus::default()
             .run_command("convert-sql-log", &host.invocation(), Some(log))
             .unwrap();
-        assert_eq!(out.as_deref(), Some("select id from users where code = '00123';"));
+        assert_eq!(
+            out.as_deref(),
+            Some("select id from users where code = '00123';")
+        );
         assert_eq!(
             host.clipboard().as_deref(),
             Some("select id from users where code = '00123';")
